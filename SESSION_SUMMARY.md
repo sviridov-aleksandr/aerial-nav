@@ -164,11 +164,26 @@
 
 ### Подключение реального контроллера (USB)
 
-- Подключен CUAV X7+ Pro по USB: два порта `/dev/tyACM0` и `/dev/tyACM1` (USB ID 1209:5740 CUAV-X7-bdshot).
+- Подключен CUAV X7+ Pro по USB: два порта `/dev/ttyACM0` и `/dev/ttyACM1` (USB ID 1209:5740 CUAV-X7-bdshot).
 - Оба отвечают heartbeat: **ArduPilot (autopilot=3), тип 1 = Fixed Wing**.
-- Добавлен автодетект порта в `mavlink_bridge.py` (`_auto_detect_port()`): поиск /dev/tyACM*, проверка heartbeat + телеметрии, выбор лучшего (score).
+- Добавлен автодетект порта в `mavlink_bridge.py` (`_auto_detect_port()`): поиск /dev/ttyACM*, проверка heartbeat + телеметрии, выбор лучшего (score).
 - Тест моста с реальным FC: 312 сообщений за 10 сек (~31 msg/s), телеметрия ATTITUDE/VFR_HUD/GPS работает, GPS нет в помещении (норма).
 - Baud для USB CDC: 115200 (не 921600 — это для UART-телеметрии).
+
+### Отказоустойчивость: конечный автомат источников навигации
+
+Логика: не вмешиваться в FC, а управлять тем, что отдаём. ArduPilot сам ведёт EKF3 (ИНС + компасы CAN + GNSS).
+
+Состояния (`NavSource` enum):
+- `MAP_MATCHING` — Siamese matching валиден → отправляем `VISION_POSITION_ESTIMATE` с ковариацией из EKF.
+- `INS_DEAD_RECKONING` — 10 неудач matching подряд → перестаём отправлять vision, FC уходит на свою ИНС + компасы.
+- `GPS_CORRECTION` — в ИНС появился валидный GNSS → корректируем наш EKF по GPS, ждём восстановления matching.
+
+Переходы:
+- MAP_MATCHING → INS (10 неудач) → GPS_CORRECTION (GNSS валиден) → MAP_MATCHING (matching восстановлен).
+- Опрос GNSS каждые 2 сек в режимах ИНС/GPS.
+- Предупреждение при дрейфе ИНС > 500 м.
+- EKF predict работает всегда (по скорости/heading из FC).
 
 ### Статус Run4 (на момент обновления)
 

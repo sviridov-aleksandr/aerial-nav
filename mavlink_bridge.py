@@ -42,6 +42,7 @@ import threading
 import numpy as np
 from typing import Optional, Dict, Tuple
 from dataclasses import dataclass, field
+from enum import Enum
 
 # pymavlink
 from pymavlink import mavutil
@@ -50,6 +51,13 @@ PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, PROJECT_DIR)
 
 from drone_config import DroneConfig
+
+
+class NavSource(Enum):
+    """Источник навигации — определяет, что отправляем в FC."""
+    MAP_MATCHING = "MAP_MATCHING"      # Siamese matching работает — отправляем vision
+    INS_DEAD_RECKONING = "INS"         # Matching пропал — FC летит по своей ИНС, мы не вмешиваемся
+    GPS_CORRECTION = "GPS_CORRECTION"  # Появился GNSS — корректируем наш EKF, ждём восстановления matching
 
 
 @dataclass
@@ -90,6 +98,11 @@ class NavigationConfig:
     camera_width: int = 3840
     camera_height: int = 2160
     tile_size: int = 512
+    # Отказоустойчивость
+    max_match_failures: int = 10       # подряд неудач matching → переход на ИНС
+    gps_poll_interval_s: float = 2.0   # частота опроса GNSS при недоступности карты
+    vision_timeout_s: float = 3.0      # таймаут vision для ArduPilot (параметр VISION_POSITION_ESTIMATE)
+    max_ins_drift_m: float = 500.0     # макс. дрейф ИНС без коррекции (предупреждение)
 
 
 class MAVLinkBridge:
@@ -362,6 +375,15 @@ class NavigationPipeline:
         self.cap = None
         self.running = False
 
+        # Конечный автомат источников навигации
+        self.nav_source = NavSource.INS_DEAD_RECKONING
+        self.match_failures = 0
+        self.match_successes = 0
+        self.last_match_time = 0.0
+        self.last_gps_poll = 0.0
+        self.last_vision_sent = 0.0
+        self.ins_drift_start_pos = None  # позиция на момент перехода на ИНС
+
         # Статистика
         self.frames_processed = 0
         self.matches_accepted = 0
@@ -510,13 +532,20 @@ class NavigationPipeline:
         return np.array(img)
 
     def run(self):
-        """Главный цикл навигации (5 Гц)."""
+        """
+        Главный цикл навигации (5 Гц) с конечным автоматом источников.
+
+        Состояния:
+          MAP_MATCHING → matching валиден → отправляем VISION_POSITION_ESTIMATE
+          INS_DEAD_RECKONING → matching пропал → не отправляем vision, FC летит по ИНС
+          GPS_CORRECTION → появился GNSS → корректируем EKF, ждём matching
+        """
         self.running = True
         dt = 1.0 / self.config.nav_rate_hz
         match_interval = 1.0 / self.config.nav_rate_hz
-        last_match_time = 0
 
         print(f"[Pipeline] Запуск навигации ({self.config.nav_rate_hz} Гц)")
+        print(f"[Pipeline] Источник: {self.nav_source.value}")
         print(f"[Pipeline] Ctrl+C для остановки")
 
         try:
@@ -526,71 +555,134 @@ class NavigationPipeline:
                 # 1. Получаем телеметрию
                 tel = self.bridge.get_telemetry()
 
-                # 2. EKF predict (по скорости и heading из FC)
+                # 2. EKF predict (по скорости и heading из FC) — всегда
                 if tel.timestamp > 0:
                     self.ekf.predict(tel.speed_ms, tel.yaw, dt)
 
-                # 3. Map matching (каждый цикл или реже)
+                # 3. Map matching
                 now = time.time()
-                if now - last_match_time >= match_interval:
+                if now - self.last_match_time >= match_interval:
                     frame = self._capture_frame()
-                    if frame is not None and frame.max() > 0:
-                        # Компенсируем рыскание
-                        frame_aligned = self._rotate_frame_by_yaw(frame, tel.yaw)
+                    match_ok = False
 
-                        # Локальный поиск
+                    if frame is not None and frame.max() > 0:
+                        frame_aligned = self._rotate_frame_by_yaw(frame, tel.yaw)
                         pred_x, pred_y = self.ekf.get_position()
                         match = self.ekf.update(frame_aligned, self.config.search_radius_m)
 
                         if match is not None:
                             self.ekf.correct(match)
                             self.matches_accepted += 1
+                            self.match_successes += 1
+                            self.match_failures = 0
+                            match_ok = True
+
+                            # Переход: ИНС/GPS → MAP_MATCHING
+                            if self.nav_source != NavSource.MAP_MATCHING:
+                                print(f"[Nav] {self.nav_source.value} → MAP_MATCHING "
+                                      f"(matching восстановлен, confidence={match['confidence']:.2f})")
+                                self.nav_source = NavSource.MAP_MATCHING
+                                self.ins_drift_start_pos = None
                         else:
                             self.matches_rejected += 1
+                            self.match_failures += 1
+                            self.match_successes = 0
 
-                    last_match_time = now
+                    self.last_match_time = now
                     self.frames_processed += 1
 
-                # 4. Отправка позиции в FC
-                x_px, y_px = self.ekf.get_position()
-                x_m = x_px * self.config.map_resolution
-                y_m = y_px * self.config.map_resolution
-                z_m = -tel.altitude_m  # NED: z вниз
+                    # Переход: MAP_MATCHING → INS_DEAD_RECKONING
+                    if not match_ok and self.nav_source == NavSource.MAP_MATCHING:
+                        if self.match_failures >= self.config.max_match_failures:
+                            print(f"[Nav] MAP_MATCHING → INS_DEAD_RECKONING "
+                                  f"({self.match_failures} неудач подряд)")
+                            self.nav_source = NavSource.INS_DEAD_RECKONING
+                            x, y = self.ekf.get_position()
+                            self.ins_drift_start_pos = (x, y)
 
-                # Ковариация из EKF
-                unc_x, unc_y = self.ekf.get_uncertainty()
-                cov = np.zeros(21)
-                cov[0] = unc_x ** 2
-                cov[6] = unc_y ** 2
-                cov[12] = 1.0
-                cov[15] = 0.01
-                cov[18] = 0.01
-                cov[20] = 0.01
+                # 4. Опрос GNSS при недоступности карты
+                if self.nav_source != NavSource.MAP_MATCHING:
+                    if now - self.last_gps_poll >= self.config.gps_poll_interval_s:
+                        self.last_gps_poll = now
+                        if tel.gps_fix:
+                            # Корректируем EKF по GPS
+                            gps_x, gps_y = self._gps_to_map_px(tel.gps_lat, tel.gps_lon)
+                            cur_x, cur_y = self.ekf.get_position()
+                            drift_m = math.sqrt(
+                                (gps_x - cur_x)**2 + (gps_y - cur_y)**2
+                            ) * self.config.map_resolution
 
-                self.bridge.send_vision_position(
-                    x_m, y_m, z_m,
-                    tel.roll, tel.pitch, tel.yaw,
-                    covariance=cov
-                )
+                            if self.nav_source != NavSource.GPS_CORRECTION:
+                                print(f"[Nav] {self.nav_source.value} → GPS_CORRECTION "
+                                      f"(GNSS валиден, дрейф={drift_m:.0f} м)")
+                                self.nav_source = NavSource.GPS_CORRECTION
 
-                self.last_position = (x_m, y_m, z_m)
+                            # Корректируем позицию EKF по GPS (мягко, через init)
+                            self.ekf.init_from_gps(gps_x, gps_y)
+                        else:
+                            # GNSS недоступен — остаёмся на ИНС
+                            if self.nav_source == NavSource.GPS_CORRECTION:
+                                print("[Nav] GPS_CORRECTION → INS_DEAD_RECKONING (GNSS пропал)")
+                                self.nav_source = NavSource.INS_DEAD_RECKONING
 
-                # 5. Логирование (каждые 5 секунд)
+                # 5. Отправка позиции в FC — только при MAP_MATCHING
+                if self.nav_source == NavSource.MAP_MATCHING:
+                    x_px, y_px = self.ekf.get_position()
+                    x_m = x_px * self.config.map_resolution
+                    y_m = y_px * self.config.map_resolution
+                    z_m = -tel.altitude_m  # NED: z вниз
+
+                    # Ковариация из EKF
+                    unc_x, unc_y = self.ekf.get_uncertainty()
+                    cov = np.zeros(21)
+                    cov[0] = unc_x ** 2
+                    cov[6] = unc_y ** 2
+                    cov[12] = 1.0
+                    cov[15] = 0.01
+                    cov[18] = 0.01
+                    cov[20] = 0.01
+
+                    self.bridge.send_vision_position(
+                        x_m, y_m, z_m,
+                        tel.roll, tel.pitch, tel.yaw,
+                        covariance=cov
+                    )
+                    self.last_vision_sent = now
+                    self.last_position = (x_m, y_m, z_m)
+
+                # 6. Предупреждение о дрейфе ИНС
+                if self.nav_source != NavSource.MAP_MATCHING and self.ins_drift_start_pos:
+                    cur_x, cur_y = self.ekf.get_position()
+                    sx, sy = self.ins_drift_start_pos
+                    drift_m = math.sqrt(
+                        (cur_x - sx)**2 + (cur_y - sy)**2
+                    ) * self.config.map_resolution
+                    if drift_m > self.config.max_ins_drift_m:
+                        print(f"[Nav] ⚠️ Дрейф ИНС: {drift_m:.0f} м "
+                              f"(источник: {self.nav_source.value})")
+
+                # 7. Логирование (каждые 5 секунд)
                 if self.frames_processed % 25 == 0 and self.frames_processed > 0:
+                    x_px, y_px = self.ekf.get_position()
+                    x_m = x_px * self.config.map_resolution
+                    y_m = y_px * self.config.map_resolution
                     lat, lon = self._map_px_to_gps(x_px, y_px)
                     speed, heading = self.ekf.get_velocity()
                     stats = self.ekf.get_statistics()
-                    print(f"[Nav] Позиция: ({x_m:.1f}, {y_m:.1f}) м | "
+                    unc_x, unc_y = self.ekf.get_uncertainty()
+                    print(f"[Nav] [{self.nav_source.value}] "
+                          f"Поз: ({x_m:.1f}, {y_m:.1f}) м | "
                           f"GPS: {lat:.5f}, {lon:.5f} | "
-                          f"Скорость: {speed:.1f} м/с | "
+                          f"V={speed:.1f} м/с | "
                           f"Unc: ±{unc_x:.1f} м | "
-                          f"Match: {stats['accept_rate']:.0f}%")
+                          f"Match: {stats['accept_rate']:.0f}% | "
+                          f"Fail: {self.match_failures}")
 
-                # 6. Heartbeat компаньона (раз в секунду)
+                # 8. Heartbeat компаньона (раз в секунду)
                 if int(now) != int(self.bridge.last_heartbeat):
                     self.bridge.send_heartbeat()
 
-                # 7. Соблюдение частоты
+                # 9. Соблюдение частоты
                 elapsed = time.time() - loop_start
                 sleep_time = dt - elapsed
                 if sleep_time > 0:
