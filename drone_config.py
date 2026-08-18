@@ -3,6 +3,7 @@
 """
 
 import os
+import math
 
 
 class DroneConfig:
@@ -22,33 +23,34 @@ class DroneConfig:
     
     # Полётные параметры
     MIN_ALTITUDE = 700.0  # м
-    MAX_ALTITUDE = 1000.0  # м
-    CRUISE_ALTITUDE = 850.0  # м
+    MAX_ALTITUDE = 1200.0  # м
+    CRUISE_ALTITUDE = 1000.0  # м
     MIN_SPEED = 15.0  # м/с (54 км/ч)
-    MAX_SPEED = 30.0  # м/с (108 км/ч)
+    MAX_SPEED = 33.0  # м/с (120 км/ч)
     CRUISE_SPEED = 22.0  # м/с (79 км/ч)
     MIN_TURN_RADIUS = 100.0  # м (для крыла)
     
     # Камера
-    CAMERA_TYPE = "DIGITAL_OPENIPC"
-    CAMERA_RESOLUTION = (1920, 1080)  # FullHD
+    CAMERA_TYPE = "OpenIPC_MC800S_V3"
+    CAMERA_SENSOR = "Sony_IMX415"
+    CAMERA_CHIPSET = "SigmaStar_SSC338Q"
+    CAMERA_RESOLUTION = (3840, 2160)  # 4K (8 МП)
     CAMERA_FPS = 30
-    CAMERA_ZOOM = 30  # 30x оптический зум
-    CAMERA_FOV_H = 15.0  # градусов (при 30x зуме)
-    CAMERA_FOV_V = 8.5  # градусов
-    
+    CAMERA_LENS = "ASX-0116_KH"
+    # Без оптического зума — фиксированный объектив
+    CAMERA_FOV_H = 90.0  # градусов (согласно симулятору)
+    CAMERA_FOV_V = 51.0  # градусов (соотношение 16:9)
+
     # Расчёт разрешения земли
     @staticmethod
     def get_ground_resolution(altitude_m: float) -> float:
         """
         Вычисляет разрешение земли (м/пиксель) на заданной высоте.
-        
-        При 1000м и 30x зуме: ~0.05-0.1 м/пиксель
+        При 1000 м и FOV 90°: ~0.4 м/пиксель
         """
-        # Упрощённая формула: resolution = altitude * tan(fov/2) / (width/2)
-        fov_rad = DroneConfig.CAMERA_FOV_H * 3.14159 / 180.0
+        fov_rad = math.radians(DroneConfig.CAMERA_FOV_H)
         width = DroneConfig.CAMERA_RESOLUTION[0]
-        resolution = (altitude_m * fov_rad) / width
+        resolution = (altitude_m * 2 * math.tan(fov_rad / 2)) / width
         return resolution
     
     # Параметры карты
