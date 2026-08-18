@@ -1,0 +1,444 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Симуляция полёта — Aerial Nav</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        html, body { height: 100%; margin: 0; }
+        #app { display: flex; height: 100vh; }
+        #sidebar {
+            width: 360px; min-width: 360px; padding: 16px;
+            overflow-y: auto; background: #1a1a2e; color: #e0e0e0;
+            border-right: 1px solid #333;
+        }
+        #map { flex: 1; height: 100%; background: #0d1117; }
+        .section-title {
+            font-weight: 600; font-size: 0.8rem; text-transform: uppercase;
+            color: #8b8b9e; margin-top: 16px; margin-bottom: 8px;
+            letter-spacing: 0.5px;
+        }
+        .telemetry-card {
+            background: #16213e; border: 1px solid #233; border-radius: 8px;
+            padding: 12px 14px; margin: 4px 0;
+        }
+        .telemetry-row {
+            display: flex; justify-content: space-between; align-items: center;
+            padding: 4px 0;
+        }
+        .telemetry-label { font-size: 0.8rem; color: #8b8b9e; }
+        .telemetry-value { font-size: 1.1rem; font-weight: 600; font-family: monospace; color: #4ecca3; }
+        .telemetry-value.warn { color: #ff6b6b; }
+        .telemetry-value.alt { color: #ffd93d; }
+        .btn-sim {
+            width: 100%; margin-top: 8px; font-weight: 600; border-radius: 6px;
+        }
+        .progress-bar-bg {
+            background: #16213e; border-radius: 4px; height: 8px; overflow: hidden;
+            margin-top: 4px;
+        }
+        .progress-bar-fill {
+            height: 100%; background: linear-gradient(90deg, #4ecca3, #38d39f);
+            transition: width 0.3s;
+        }
+        .speed-btns { display: flex; gap: 4px; margin-top: 6px; }
+        .speed-btn {
+            flex: 1; padding: 4px 8px; border: 1px solid #333; background: #16213e;
+            color: #8b8b9e; border-radius: 4px; cursor: pointer; font-size: 0.8rem;
+            text-align: center; transition: all 0.2s;
+        }
+        .speed-btn:hover { border-color: #4ecca3; color: #4ecca3; }
+        .speed-btn.active { background: #4ecca3; color: #1a1a2e; font-weight: 700; }
+        .waypoint-list {
+            max-height: 180px; overflow-y: auto; font-size: 0.78rem;
+            font-family: monospace;
+        }
+        .waypoint-item {
+            display: flex; justify-content: space-between; padding: 3px 6px;
+            border-radius: 4px; margin: 1px 0;
+        }
+        .waypoint-item.current { background: #4ecca3; color: #1a1a2e; font-weight: 600; }
+        .waypoint-item.passed { color: #555; }
+        .waypoint-item.passed::before { content: '✓ '; }
+        .leaflet-container { background: #0d1117; }
+        h5 { color: #4ecca3; }
+        .status-badge {
+            display: inline-block; padding: 2px 10px; border-radius: 12px;
+            font-size: 0.75rem; font-weight: 600;
+        }
+        .status-running { background: #4ecca3; color: #1a1a2e; }
+        .status-paused { background: #ffd93d; color: #1a1a2e; }
+        .status-stopped { background: #ff6b6b; color: #fff; }
+        .drone-info-overlay {
+            position: absolute; bottom: 20px; left: 20px; z-index: 1000;
+            background: rgba(26,26,46,0.9); color: #e0e0e0; padding: 10px 16px;
+            border-radius: 8px; font-family: monospace; font-size: 0.85rem;
+            border: 1px solid #333; backdrop-filter: blur(4px);
+        }
+    </style>
+</head>
+<body>
+<div id="app">
+    <div id="sidebar">
+        <h5 class="mb-3">🛩️ Симуляция полёта</h5>
+        <div class="mb-2">
+            <span class="status-badge status-stopped" id="statusBadge">Остановлено</span>
+            <span class="text-muted small ms-2" id="simTime">00:00</span>
+        </div>
+
+        <!-- Управление -->
+        <div class="section-title">Управление</div>
+        <button class="btn btn-success btn-sim" id="startBtn">▶️ Старт</button>
+        <button class="btn btn-warning btn-sim" id="pauseBtn" style="display:none;">⏸️ Пауза</button>
+        <button class="btn btn-danger btn-sim" id="resetBtn">⏹️ Сброс</button>
+
+        <!-- Скорость -->
+        <div class="section-title">Скорость симуляции</div>
+        <div class="speed-btns">
+            <div class="speed-btn active" data-speed="1">1×</div>
+            <div class="speed-btn" data-speed="2">2×</div>
+            <div class="speed-btn" data-speed="5">5×</div>
+            <div class="speed-btn" data-speed="10">10×</div>
+        </div>
+
+        <!-- Телеметрия -->
+        <div class="section-title">Телеметрия</div>
+        <div class="telemetry-card">
+            <div class="telemetry-row">
+                <span class="telemetry-label">Высота</span>
+                <span class="telemetry-value alt" id="telAlt">— м</span>
+            </div>
+            <div class="telemetry-row">
+                <span class="telemetry-label">Скорость</span>
+                <span class="telemetry-value" id="telSpeed">— м/с</span>
+            </div>
+            <div class="telemetry-row">
+                <span class="telemetry-label">Курс</span>
+                <span class="telemetry-value" id="telHeading">—°</span>
+            </div>
+            <div class="telemetry-row">
+                <span class="telemetry-label">Крен</span>
+                <span class="telemetry-value" id="telBank">—°</span>
+            </div>
+        </div>
+
+        <!-- Маршрут -->
+        <div class="section-title">Прогресс маршрута</div>
+        <div class="telemetry-card">
+            <div class="telemetry-row">
+                <span class="telemetry-label">Waypoint</span>
+                <span class="telemetry-value" id="telWP">0 / 0</span>
+            </div>
+            <div class="telemetry-row">
+                <span class="telemetry-label">До WP</span>
+                <span class="telemetry-value" id="telDistWP">— м</span>
+            </div>
+            <div class="progress-bar-bg">
+                <div class="progress-bar-fill" id="progressFill" style="width: 0%;"></div>
+            </div>
+            <div class="small text-muted mt-1" id="progressText">0%</div>
+        </div>
+
+        <!-- Список waypoint'ов -->
+        <div class="section-title">Точки маршрута</div>
+        <div class="waypoint-list" id="wpList"></div>
+
+        <!-- Камера -->
+        <div class="section-title">Камера (OpenIPC IMX415)</div>
+        <div class="telemetry-card">
+            <div class="telemetry-row">
+                <span class="telemetry-label">FOV</span>
+                <span class="telemetry-value">90°</span>
+            </div>
+            <div class="telemetry-row">
+                <span class="telemetry-label">Разрешение</span>
+                <span class="telemetry-value">4K</span>
+            </div>
+            <div class="telemetry-row">
+                <span class="telemetry-label">Footprint</span>
+                <span class="telemetry-value" id="telFootprint">— м</span>
+            </div>
+        </div>
+    </div>
+
+    <div id="map"></div>
+    <div class="drone-info-overlay" id="droneOverlay">
+        <span style="color:#4ecca3;">●</span> Дрон в режиме ожидания
+    </div>
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+// ------------------------------------------------------------
+// Карта
+// ------------------------------------------------------------
+let map, routeLayer, droneLayer, fovLayer, trailLayer, wpLayer;
+let droneMarker = null;
+let pollTimer = null;
+let currentSpeed = 1;
+let lastState = null;
+
+const TILE_PROVIDERS = {
+    esri: {
+        url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+        attribution: '© ESRI', maxZoom: 19
+    },
+    google: {
+        url: 'https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}',
+        attribution: '© Google', maxZoom: 20
+    }
+};
+
+function initMap() {
+    map = L.map('map', { zoomControl: true }).setView([46.27, 33.33], 11);
+
+    L.tileLayer(TILE_PROVIDERS.google.url, {
+        attribution: TILE_PROVIDERS.google.attribution,
+        maxZoom: TILE_PROVIDERS.google.maxZoom
+    }).addTo(map);
+
+    routeLayer = L.layerGroup().addTo(map);
+    droneLayer = L.layerGroup().addTo(map);
+    fovLayer = L.layerGroup().addTo(map);
+    trailLayer = L.layerGroup().addTo(map);
+    wpLayer = L.layerGroup().addTo(map);
+}
+
+// Иконка дрона (SVG)
+const droneIcon = L.divIcon({
+    className: 'drone-icon',
+    html: `<svg width="32" height="32" viewBox="0 0 32 32" style="transform-origin: center;">
+        <path d="M16 2 L20 14 L30 16 L20 18 L16 30 L12 18 L2 16 L12 14 Z"
+              fill="#4ecca3" stroke="#1a1a2e" stroke-width="1.5" opacity="0.9"/>
+        <circle cx="16" cy="16" r="3" fill="#ffd93d" stroke="#1a1a2e" stroke-width="1"/>
+    </svg>`,
+    iconSize: [32, 32],
+    iconAnchor: [16, 16]
+});
+
+// ------------------------------------------------------------
+// Загрузка маршрута
+// ------------------------------------------------------------
+async function loadRoute() {
+    try {
+        const resp = await fetch('/api/route');
+        const data = await resp.json();
+        if (data.points && data.points.length > 0) {
+            drawRoute(data.points);
+            renderWaypoints(data.points);
+            map.fitBounds(data.points.map(p => [p[0], p[1]]), { padding: [60, 60] });
+        }
+    } catch (e) { console.error(e); }
+}
+
+function drawRoute(points) {
+    routeLayer.clearLayers();
+    wpLayer.clearLayers();
+
+    const latlngs = points.map(p => [p[0], p[1]]);
+
+    // Линия маршрута
+    L.polyline(latlngs, { color: '#ff4444', weight: 2, opacity: 0.7, dashArray: '8,6' }).addTo(routeLayer);
+
+    // Маркеры waypoint'ов
+    points.forEach((p, i) => {
+        const isFirst = (i === 0);
+        const isLast = (i === points.length - 1);
+        const label = isFirst ? '🛫 Старт' : (isLast ? '🛬 Финиш' : `WP${i}`);
+        L.circleMarker([p[0], p[1]], {
+            radius: 5, color: '#ff6600', fillColor: '#ff6600',
+            fillOpacity: 0.8, weight: 2
+        }).bindTooltip(`${label}`).addTo(wpLayer);
+    });
+}
+
+function renderWaypoints(points) {
+    const list = document.getElementById('wpList');
+    list.innerHTML = '';
+    points.forEach((p, i) => {
+        const div = document.createElement('div');
+        div.className = 'waypoint-item';
+        div.id = `wp-${i}`;
+        div.innerHTML = `<span>WP${i}</span><span>${p[0].toFixed(5)}, ${p[1].toFixed(5)}</span>`;
+        list.appendChild(div);
+    });
+}
+
+// ------------------------------------------------------------
+// Обновление состояния
+// ------------------------------------------------------------
+function updateState(state) {
+    lastState = state;
+
+    // Статус
+    const badge = document.getElementById('statusBadge');
+    if (state.running) {
+        badge.className = 'status-badge status-running';
+        badge.textContent = 'Полёт';
+    } else if (state.paused) {
+        badge.className = 'status-badge status-paused';
+        badge.textContent = 'Пауза';
+    } else {
+        badge.className = 'status-badge status-stopped';
+        badge.textContent = 'Остановлено';
+    }
+
+    // Время
+    const t = state.sim_time;
+    const mm = String(Math.floor(t / 60)).padStart(2, '0');
+    const ss = String(Math.floor(t % 60)).padStart(2, '0');
+    document.getElementById('simTime').textContent = `${mm}:${ss}`;
+
+    // Телеметрия
+    const d = state.drone;
+    document.getElementById('telAlt').textContent = `${d.alt.toFixed(0)} м`;
+    document.getElementById('telSpeed').textContent = `${d.speed.toFixed(1)} м/с`;
+    document.getElementById('telHeading').textContent = `${d.heading.toFixed(1)}°`;
+    document.getElementById('telBank').textContent = `${d.bank.toFixed(1)}°`;
+
+    // Крен — цвет
+    const bankEl = document.getElementById('telBank');
+    bankEl.className = 'telemetry-value' + (Math.abs(d.bank) > 20 ? ' warn' : '');
+
+    // Waypoint
+    const wp = state.waypoint;
+    document.getElementById('telWP').textContent = `${wp.index} / ${wp.total}`;
+    document.getElementById('telDistWP').textContent = `${wp.dist_to_wp.toFixed(0)} м`;
+
+    // Прогресс
+    document.getElementById('progressFill').style.width = state.progress + '%';
+    document.getElementById('progressText').textContent = state.progress.toFixed(1) + '%';
+
+    // Footprint
+    const footprint = 2 * d.alt * Math.tan(Math.PI / 4); // FOV 90°
+    document.getElementById('telFootprint').textContent = `${footprint.toFixed(0)} м`;
+
+    // Список WP — подсветка
+    document.querySelectorAll('.waypoint-item').forEach(el => el.classList.remove('current', 'passed'));
+    for (let i = 0; i < wp.index; i++) {
+        const el = document.getElementById(`wp-${i}`);
+        if (el) el.classList.add('passed');
+    }
+    const curEl = document.getElementById(`wp-${wp.index}`);
+    if (curEl) curEl.classList.add('current');
+
+    // Дрон на карте
+    if (droneMarker) droneLayer.removeLayer(droneMarker);
+    droneMarker = L.marker([d.lat, d.lon], { icon: droneIcon, rotationAngle: d.heading })
+        .addTo(droneLayer);
+
+    // Поворот иконки дрона
+    const droneEl = droneMarker.getElement();
+    if (droneEl) {
+        const svg = droneEl.querySelector('svg');
+        if (svg) svg.style.transform = `rotate(${d.heading}deg)`;
+    }
+
+    // FOV конус
+    fovLayer.clearLayers();
+    if (state.fov_cone) {
+        L.polygon(state.fov_cone, {
+            color: '#4ecca3', weight: 1, opacity: 0.6,
+            fillColor: '#4ecca3', fillOpacity: 0.15
+        }).addTo(fovLayer);
+    }
+
+    // Трек пути
+    trailLayer.clearLayers();
+    if (state.trail && state.trail.length > 1) {
+        L.polyline(state.trail, { color: '#4ecca3', weight: 2, opacity: 0.5 }).addTo(trailLayer);
+    }
+
+    // Overlay
+    const overlay = document.getElementById('droneOverlay');
+    overlay.innerHTML = `<span style="color:#4ecca3;">●</span> ` +
+        `H=${d.alt.toFixed(0)}м V=${d.speed.toFixed(0)}м/с Курс=${d.heading.toFixed(0)}° ` +
+        `WP ${wp.index}/${wp.total} (${wp.dist_to_wp.toFixed(0)}м)`;
+
+    // Центрирование карты на дроне (только при активной симуляции)
+    if (state.running && !state.paused) {
+        map.panTo([d.lat, d.lon], { animate: true, duration: 0.5 });
+    }
+}
+
+// ------------------------------------------------------------
+// Опрос состояния
+// ------------------------------------------------------------
+function startPolling() {
+    if (pollTimer) clearInterval(pollTimer);
+    pollTimer = setInterval(async () => {
+        try {
+            const resp = await fetch('/api/sim/state');
+            const state = await resp.json();
+            updateState(state);
+        } catch (e) {}
+    }, 200);
+}
+
+// ------------------------------------------------------------
+// Управление
+// ------------------------------------------------------------
+async function startSim() {
+    await fetch('/api/sim/start', { method: 'POST' });
+    document.getElementById('startBtn').style.display = 'none';
+    document.getElementById('pauseBtn').style.display = 'block';
+    startPolling();
+}
+
+async function pauseSim() {
+    await fetch('/api/sim/pause', { method: 'POST' });
+    const btn = document.getElementById('pauseBtn');
+    const state = await (await fetch('/api/sim/state')).json();
+    btn.textContent = state.paused ? '▶️ Продолжить' : '⏸️ Пауза';
+}
+
+async function resetSim() {
+    await fetch('/api/sim/reset', { method: 'POST' });
+    document.getElementById('startBtn').style.display = 'block';
+    document.getElementById('pauseBtn').style.display = 'none';
+    document.getElementById('pauseBtn').textContent = '⏸️ Пауза';
+    droneLayer.clearLayers();
+    fovLayer.clearLayers();
+    trailLayer.clearLayers();
+    droneMarker = null;
+    const state = await (await fetch('/api/sim/state')).json();
+    updateState(state);
+}
+
+async function setSpeed(mult) {
+    currentSpeed = mult;
+    await fetch('/api/sim/speed', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ mult })
+    });
+    document.querySelectorAll('.speed-btn').forEach(el => el.classList.remove('active'));
+    document.querySelector(`.speed-btn[data-speed="${mult}"]`).classList.add('active');
+}
+
+// ------------------------------------------------------------
+// Инициализация
+// ------------------------------------------------------------
+window.addEventListener('DOMContentLoaded', async () => {
+    initMap();
+    await loadRoute();
+
+    document.getElementById('startBtn').onclick = startSim;
+    document.getElementById('pauseBtn').onclick = pauseSim;
+    document.getElementById('resetBtn').onclick = resetSim;
+
+    document.querySelectorAll('.speed-btn').forEach(el => {
+        el.onclick = () => setSpeed(parseFloat(el.dataset.speed));
+    });
+
+    // Первоначальное состояние
+    try {
+        const resp = await fetch('/api/sim/state');
+        const state = await resp.json();
+        updateState(state);
+    } catch (e) {}
+});
+</script>
+</body>
+</html>

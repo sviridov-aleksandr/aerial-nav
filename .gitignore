@@ -40,6 +40,10 @@ download.pid
 .DS_Store
 Thumbs.db
 
+# Tile cache (скачанные тайлы карты)
+.aerial_nav_tiles/
+.aerial_nav_cache/
+
 # ROS build
 aerial_nav_ros/build/
 aerial_nav_ros/install/

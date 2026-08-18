@@ -33,6 +33,7 @@ PROJECT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, PROJECT_DIR)
 
 from route_editor import parse_yandex_route, haversine
+from flight_sim_backend import sim
 
 app = Flask(__name__)
 
@@ -377,6 +378,48 @@ def api_download_status():
         'progress': progress,
         'stages': stages,
     })
+
+
+# ------------------------------------------------------------
+# API симуляции полёта
+# ------------------------------------------------------------
+
+@app.route('/simulation')
+def simulation_page():
+    """Страница визуализации полёта."""
+    return send_from_directory(os.path.dirname(os.path.abspath(__file__)), 'simulation.html')
+
+
+@app.route('/api/sim/start', methods=['POST'])
+def api_sim_start():
+    sim.start()
+    return jsonify({'ok': True, 'state': sim.get_state()})
+
+
+@app.route('/api/sim/pause', methods=['POST'])
+def api_sim_pause():
+    sim.pause()
+    return jsonify({'ok': True, 'state': sim.get_state()})
+
+
+@app.route('/api/sim/reset', methods=['POST'])
+def api_sim_reset():
+    sim.stop()
+    sim.reset()
+    return jsonify({'ok': True, 'state': sim.get_state()})
+
+
+@app.route('/api/sim/speed', methods=['POST'])
+def api_sim_speed():
+    data = request.get_json() or {}
+    mult = float(data.get('mult', 1.0))
+    sim.set_speed_mult(mult)
+    return jsonify({'ok': True, 'speed_mult': sim.speed_mult})
+
+
+@app.route('/api/sim/state', methods=['GET'])
+def api_sim_state():
+    return jsonify(sim.get_state())
 
 
 if __name__ == '__main__':

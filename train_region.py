@@ -1,15 +1,14 @@
 #!/usr/bin/env python3
 """
-train_route.py — fine-tune сиамской сети на маршруте.
+train_region.py — обучение сиамской сети на региональной карте.
 
-Curriculum learning, этап 2: добучение на маршруте (6.2K тайлов).
-  - Стартовая модель: region_model.pth (обучена на регионе, 70K тайлов)
+Curriculum learning, этап 1: обучение на регионе (39×30 км, 70K тайлов).
   - TripletLoss (anchor=кадр камеры, positive=карта, negative=другой тайл)
-  - Малый LR (1e-4) — тонкая настройка, не разрушаем признаки региона
-  - Меньше эпох (8) — маршрут маленький, переобучение быстрое
+  - Расширенные аугментации (масштаб, перспектива, туман, облака, шум)
+  - ResNet-18 с ImageNet pretrained weights (torchvision)
 
 Использование:
-  python3 train_route.py
+  python3 train_region.py
 """
 
 import os
@@ -32,13 +31,12 @@ multiprocessing.set_start_method('fork', force=True)
 
 def main():
     # Параметры
-    MAP_PATH = '/home/alex/aerial-nav/map_cache/antiuav_route_strip.tif'
-    COORDS_PATH = '/home/alex/aerial-nav/training_data/route_dataset/positive_coords.npy'
-    INIT_MODEL = 'region_model.pth'
-    OUTPUT_PATH = 'route_model.pth'
-    EPOCHS = 8
+    MAP_PATH = '/home/alex/aerial-nav/map_cache/region_google.tif'
+    COORDS_PATH = '/home/alex/aerial-nav/training_data/region_dataset/positive_coords.npy'
+    OUTPUT_PATH = 'region_model.pth'
+    EPOCHS = 15
     BATCH_SIZE = 32
-    LR = 1e-4
+    LR = 1e-3
     NUM_WORKERS = 6
     DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 
@@ -46,36 +44,26 @@ def main():
     print(f"[Train] Batch size: {BATCH_SIZE}")
     print(f"[Train] Workers: {NUM_WORKERS}")
     print(f"[Train] Loss: TripletLoss (margin=1.0)")
-    print(f"[Train] LR: {LR} (fine-tune)")
 
-    # Модель: torchvision ResNet-18 (ImageNet pretrained)
+    # Модель: torchvision ResNet-18 с ImageNet pretrained weights
     print(f"[Train] Создание модели (ResNet-18, ImageNet pretrained)")
     model = AerialFeatureExtractor(embedding_dim=256).to(DEVICE)
-
-    # Загружаем веса региона (этап 1 curriculum learning)
-    if os.path.exists(INIT_MODEL):
-        print(f"[Train] Загрузка весов региона: {INIT_MODEL}")
-        ckpt = torch.load(INIT_MODEL, map_location=DEVICE, weights_only=False)
-        if isinstance(ckpt, dict) and 'model_state_dict' in ckpt:
-            model.load_state_dict(ckpt['model_state_dict'])
-        else:
-            model.load_state_dict(ckpt)
-        print(f"[Train] Веса региона загружены")
-    else:
-        print(f"[Train] ВНИМАНИЕ: {INIT_MODEL} не найден, обучение с нуля!")
+    n_params = sum(p.numel() for p in model.parameters())
+    print(f"[Train] Параметров: {n_params/1e6:.1f}M")
 
     # Loss и оптимизатор
     criterion = TripletLoss(margin=1.0).to(DEVICE)
     optimizer = torch.optim.AdamW(model.parameters(), lr=LR, weight_decay=1e-4)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=EPOCHS)
 
-    # Датасет (маршрут)
+    # Датасет
     print(f"[Train] Создание датасета...")
     dataset = TripletDataset(
         map_path=MAP_PATH,
         coords_path=COORDS_PATH,
         tile_size=512,
         hard_neg_prob=0.5,
+        aug_level=0,  # стартуем с лёгких аугментаций (curriculum)
     )
     loader = DataLoader(
         dataset,
@@ -88,10 +76,25 @@ def main():
     )
     print(f"[Train] Датасет: {len(dataset)} триплетов")
     print(f"[Train] Шагов на эпоху: {len(loader)}")
+    print(f"[Train] Curriculum: 3 этапа × 5 эпох")
+    print(f"  Этап 1 (эпохи 1-5):  масштаб (scale 0.25-2.0)")
+    print(f"  Этап 2 (эпохи 6-10): масштаб + поворот (±30°)")
+    print(f"  Этап 3 (эпохи 11-15): полный набор (перспектива + погода + шум)")
+
+    def curriculum_level(epoch: int) -> int:
+        """Этап curriculum по эпохе.
+        15 эпох: 0-4 → этап 0 (масштаб), 5-9 → этап 1 (+поворот), 10-14 → этап 2 (полный).
+        """
+        if epoch < 5:
+            return 0
+        elif epoch < 10:
+            return 1
+        else:
+            return 2
 
     # Обучение
     print(f"\n{'='*70}")
-    print("FINE-TUNE НА МАРШРУТЕ (этап 2 curriculum learning)")
+    print("ОБУЧЕНИЕ СИАМСКОЙ СЕТИ НА РЕГИОНЕ")
     print(f"{'='*70}")
 
     best_loss = float('inf')
@@ -99,6 +102,12 @@ def main():
     for epoch in range(EPOCHS):
         start_time = time.time()
         model.train()
+
+        # Curriculum: меняем уровень аугментаций по эпохам
+        aug_lvl = curriculum_level(epoch)
+        dataset.aug_level = aug_lvl
+        print(f"\n[Epoch {epoch+1}] Curriculum level: {aug_lvl}")
+
         total_loss = 0
         # Метрика: доля триплетов, где d(a,p) < d(a,n)
         correct = 0
@@ -158,12 +167,11 @@ def main():
                 'embedding_dim': 256,
                 'loss_type': 'triplet',
                 'margin': 1.0,
-                'init_model': INIT_MODEL,
             }, OUTPUT_PATH)
             print(f"  ✓ Лучшая модель сохранена: {OUTPUT_PATH}")
 
     print(f"\n{'='*70}")
-    print("FINE-TUNE ЗАВЕРШЁН")
+    print("ОБУЧЕНИЕ ЗАВЕРШЕНО")
     print(f"{'='*70}")
     print(f"  Лучший loss: {best_loss:.4f}")
     print(f"  Финальная модель: {OUTPUT_PATH}")

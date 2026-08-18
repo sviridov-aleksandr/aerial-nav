@@ -31,6 +31,10 @@ from io import BytesIO
 # Убираем лимит PIL
 Image.MAX_IMAGE_PIXELS = None
 
+# Расширенные аугментации камеры
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from augmentations import apply_camera_conditions
+
 
 class SiameseDataset(Dataset):
     """
@@ -149,49 +153,20 @@ class SiameseDataset(Dataset):
             return np.transpose(tile[:3], (1, 2, 0))
 
     def _augment(self, frame: np.ndarray) -> np.ndarray:
-        """Применяет аугментации к кадру."""
+        """
+        Применяет расширенные аугментации к кадру камеры.
+        Делегирует в augmentations.apply_camera_conditions:
+          - масштаб (высота 700-1200 м)
+          - перспектива (наклон камеры)
+          - рыскание (поворот ±15°)
+          - сдвиг/кроп (смещение кадра)
+          - облачность, туман, тени
+          - фотометрия (яркость/контраст/гамма)
+          - шум матрицы, размытие, JPEG-сжатие
+        """
         img = Image.fromarray(frame)
-
-        # Яркость (±20%)
-        enhancer = ImageEnhance.Brightness(img)
-        img = enhancer.enhance(random.uniform(0.8, 1.2))
-
-        # Контраст (±20%)
-        enhancer = ImageEnhance.Contrast(img)
-        img = enhancer.enhance(random.uniform(0.8, 1.2))
-
-        # Цветовой тон (±10%)
-        enhancer = ImageEnhance.Color(img)
-        img = enhancer.enhance(random.uniform(0.9, 1.1))
-
-        # Гамма (0.8-1.2)
-        img = np.array(img)
-        gamma = random.uniform(0.8, 1.2)
-        img = np.power(img / 255.0, 1.0 / gamma) * 255.0
-        img = np.clip(img, 0, 255).astype(np.uint8)
-
-        # Шум (σ=5-15)
-        sigma = random.uniform(5, 15)
-        noise = np.random.normal(0, sigma, img.shape).astype(np.float32)
-        img = np.clip(img.astype(np.float32) + noise, 0, 255).astype(np.uint8)
-
-        # Размытие (0-2 пикселя)
-        blur = random.randint(0, 2)
-        if blur > 0:
-            img = Image.fromarray(img)
-            img = img.filter(ImageFilter.GaussianBlur(blur))
-            img = np.array(img)
-
-        # Сжатие JPEG (качество 70-95)
-        quality = random.randint(70, 95)
-        buf = BytesIO()
-        img = Image.fromarray(img)
-        img.save(buf, format='JPEG', quality=quality)
-        buf.seek(0)
-        img = Image.open(buf)
-        img = np.array(img)
-
-        return img
+        img = apply_camera_conditions(img)
+        return np.array(img)
 
     def close(self):
         """Закрывает rasterio источник."""
