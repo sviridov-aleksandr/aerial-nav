@@ -1,0 +1,596 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Планировщик маршрута — Aerial Nav</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        html, body { height: 100%; margin: 0; }
+        #app { display: flex; height: 100vh; }
+        #sidebar {
+            width: 380px; min-width: 380px; padding: 16px;
+            overflow-y: auto; background: #f8f9fa;
+            border-right: 1px solid #dee2e6;
+        }
+        #map { flex: 1; height: 100%; }
+        .point-item {
+            display: flex; align-items: center; justify-content: space-between;
+            padding: 6px 8px; margin: 2px 0; background: #fff;
+            border: 1px solid #e0e0e0; border-radius: 6px; cursor: pointer;
+        }
+        .point-item:hover { background: #e8f0fe; }
+        .point-item .coords { font-family: monospace; font-size: 0.85rem; }
+        .point-item .actions { white-space: nowrap; }
+        .point-item .actions button {
+            border: none; background: none; color: #dc3545; cursor: pointer;
+            font-size: 1.1rem; padding: 0 4px;
+        }
+        .point-item .actions .up { color: #6c757d; }
+        .section-title {
+            font-weight: 600; font-size: 0.9rem; text-transform: uppercase;
+            color: #6c757d; margin-top: 16px; margin-bottom: 8px;
+        }
+        .stat-box {
+            background: #fff; border: 1px solid #e0e0e0; border-radius: 8px;
+            padding: 10px 14px; margin: 4px 0;
+        }
+        .stat-box .label { font-size: 0.75rem; color: #6c757d; }
+        .stat-box .value { font-size: 1.1rem; font-weight: 600; }
+        .btn-download {
+            width: 100%; margin-top: 12px; font-weight: 600;
+        }
+        #logArea {
+            font-family: monospace; font-size: 0.78rem; max-height: 200px;
+            overflow-y: auto; background: #1e1e1e; color: #d4d4d4;
+            border-radius: 6px; padding: 8px; margin-top: 8px;
+        }
+        .yandex-input { width: 100%; }
+        .leaflet-container { cursor: crosshair; }
+        .badge-source { font-size: 0.7rem; }
+    </style>
+</head>
+<body>
+<div id="app">
+    <div id="sidebar">
+        <h5 class="mb-3">🛩️ Планировщик маршрута</h5>
+
+        <!-- Импорт из Яндекс.Карт -->
+        <div class="section-title">Импорт из Яндекс.Карт</div>
+        <div class="input-group input-group-sm mb-2">
+            <input type="text" id="yandexInput" class="form-control yandex-input"
+                   placeholder="Вставьте ссылку Яндекс.Карт">
+            <button class="btn btn-outline-primary" id="yandexBtn" type="button">Импорт</button>
+        </div>
+
+        <!-- Маршрутизация по дорогам -->
+        <div class="section-title">Маршрут по дорогам (OSRM)</div>
+        <div class="input-group input-group-sm mb-2">
+            <select class="form-select form-select-sm" id="osrmProfile" style="max-width:110px;">
+                <option value="driving">Авто</option>
+                <option value="foot">Пешком</option>
+                <option value="cycling">Вело</option>
+            </select>
+            <button class="btn btn-outline-success" id="osrmBtn" type="button">Проложить по дорогам</button>
+        </div>
+        <div class="small text-muted mb-2">Кликайте ключевые точки на карте, затем нажмите «Проложить» — маршрут пойдёт по дорожной сети.</div>
+
+        <!-- Точки маршрута -->
+        <div class="section-title">
+            Точки маршрута <span class="badge bg-secondary" id="pointCount">0</span>
+        </div>
+        <div id="pointList"></div>
+        <div class="d-flex gap-2 mt-2">
+            <button class="btn btn-sm btn-outline-secondary" id="clearBtn">Очистить</button>
+            <button class="btn btn-sm btn-outline-success" id="saveBtn">Сохранить JSON</button>
+        </div>
+
+        <!-- Статистика -->
+        <div class="section-title">Статистика</div>
+        <div class="stat-box">
+            <div class="label">Длина маршрута</div>
+            <div class="value" id="statLength">— км</div>
+        </div>
+        <div class="stat-box">
+            <div class="label">Оценка тайлов</div>
+            <div class="value" id="statTiles">—</div>
+        </div>
+
+        <!-- Настройки загрузки -->
+        <div class="section-title">Настройки загрузки</div>
+        <div class="mb-2">
+            <label class="form-label small">Поставщик карт</label>
+            <select class="form-select form-select-sm" id="providerSelect">
+                <option value="esri">ESRI World Imagery</option>
+                <option value="osm">OpenStreetMap</option>
+                <option value="google">Google Satellite</option>
+                <option value="yandex">Yandex Satellite</option>
+            </select>
+        </div>
+        <div class="row g-2 mb-2">
+            <div class="col-6">
+                <label class="form-label small">Ширина полосы, м</label>
+                <input type="number" class="form-control form-control-sm" id="widthM" value="750" min="100" max="5000">
+            </div>
+            <div class="col-6">
+                <label class="form-label small">Квадрат у точки, м</label>
+                <input type="number" class="form-control form-control-sm" id="patchKm" value="1000" min="500" max="5000" step="500">
+            </div>
+        </div>
+        <div class="mb-2">
+            <label class="form-label small">Разрешение, м/px</label>
+            <input type="number" class="form-control form-control-sm" id="resolution" value="0.5" min="0.1" max="2" step="0.1">
+        </div>
+
+        <button class="btn btn-primary btn-download" id="downloadBtn">⬇️ Скачать карту</button>
+        <button class="btn btn-danger btn-download" id="stopBtn" style="display:none;">⏹️ Остановить</button>
+
+        <div id="downloadProgress" class="mt-2" style="display:none;">
+            <div class="d-flex justify-content-between align-items-center mb-1">
+                <span class="small text-muted" id="progressStage">—</span>
+                <span class="small fw-bold" id="progressPercent">0%</span>
+            </div>
+            <div class="progress" style="height: 8px;">
+                <div class="progress-bar progress-bar-striped progress-bar-animated"
+                     id="progressBar" role="progressbar" style="width: 0%;"></div>
+            </div>
+            <div class="small text-muted mt-1" id="progressCount"></div>
+            <div id="stagesList" class="mt-2"></div>
+        </div>
+
+        <div id="logArea" style="display:none;"></div>
+        <div id="downloadStatus" class="mt-2" style="display:none;">
+            <span class="spinner-border spinner-border-sm text-primary"></span>
+            <span class="text-muted small">Загрузка идёт...</span>
+        </div>
+    </div>
+
+    <div id="map"></div>
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+// ------------------------------------------------------------
+// Состояние
+// ------------------------------------------------------------
+let points = [];
+let map, routeLayer, previewLayer;
+let currentTileLayer = null;
+const providers = {};
+
+// ------------------------------------------------------------
+// Карта
+// ------------------------------------------------------------
+function initMap() {
+    map = L.map('map', { zoomControl: true }).setView([46.5, 32.1], 8);
+
+    // ESRI по умолчанию
+    setTileProvider('esri');
+
+    // Клик = добавить точку
+    map.on('click', function(e) {
+        addPoint(e.latlng.lat, e.latlng.lng);
+    });
+
+    routeLayer = L.layerGroup().addTo(map);
+    previewLayer = L.layerGroup().addTo(map);
+}
+
+function setTileProvider(key) {
+    if (currentTileLayer) map.removeLayer(currentTileLayer);
+    const p = providers[key] || {
+        url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+        attribution: '', maxZoom: 19
+    };
+    currentTileLayer = L.tileLayer(p.url, {
+        attribution: p.attribution,
+        maxZoom: p.maxZoom || 19
+    }).addTo(map);
+}
+
+// ------------------------------------------------------------
+// Точки маршрута
+// ------------------------------------------------------------
+function addPoint(lat, lon) {
+    points.push([lat, lon]);
+    renderPoints();
+    drawRoute();
+    updateStats();
+}
+
+function removePoint(idx) {
+    points.splice(idx, 1);
+    renderPoints();
+    drawRoute();
+    updateStats();
+}
+
+function movePoint(idx, dir) {
+    const ni = idx + dir;
+    if (ni < 0 || ni >= points.length) return;
+    [points[idx], points[ni]] = [points[ni], points[idx]];
+    renderPoints();
+    drawRoute();
+}
+
+function renderPoints() {
+    const list = document.getElementById('pointList');
+    list.innerHTML = '';
+    document.getElementById('pointCount').textContent = points.length;
+
+    points.forEach((p, i) => {
+        const div = document.createElement('div');
+        div.className = 'point-item';
+        div.innerHTML = `
+            <span class="coords">[${i}] ${p[0].toFixed(5)}, ${p[1].toFixed(5)}</span>
+            <span class="actions">
+                <button class="up" onclick="movePoint(${i},-1)" title="Вверх">▲</button>
+                <button class="up" onclick="movePoint(${i},1)" title="Вниз">▼</button>
+                <button onclick="removePoint(${i})" title="Удалить">✕</button>
+            </span>
+        `;
+        div.onclick = function(e) {
+            if (e.target.tagName === 'BUTTON') return;
+            map.setView([p[0], p[1]], 15);
+        };
+        list.appendChild(div);
+    });
+}
+
+function drawRoute() {
+    routeLayer.clearLayers();
+    if (points.length === 0) return;
+
+    const latlngs = points.map(p => [p[0], p[1]]);
+
+    // Линия маршрута
+    L.polyline(latlngs, { color: '#ff4444', weight: 3, opacity: 0.8 }).addTo(routeLayer);
+
+    // Маркеры
+    points.forEach((p, i) => {
+        const isFirst = (i === 0);
+        const isLast = (i === points.length - 1);
+        const icon = isFirst ? '🛫' : (isLast ? '🛬' : '📍');
+        L.marker([p[0], p[1]]).bindTooltip(`[${i}] ${icon}`).addTo(routeLayer);
+    });
+
+    // Превью области загрузки
+    drawPreview();
+}
+
+function drawPreview() {
+    previewLayer.clearLayers();
+    if (points.length === 0) return;
+
+    const patchKm = (parseFloat(document.getElementById('patchKm').value) || 1000) / 1000;
+    const widthM = parseFloat(document.getElementById('widthM').value) || 500;
+
+    // Квадраты у точек
+    points.forEach(p => {
+        const half = patchKm / 2;
+        const bounds = latLonBounds(p[0], p[1], half * 1000);
+        L.rectangle(bounds, { color: '#4CAF50', weight: 1, opacity: 0.5, fillOpacity: 0.1 }).addTo(previewLayer);
+    });
+
+    // Полосы между точками
+    for (let i = 0; i < points.length - 1; i++) {
+        const line = L.polyline([[points[i][0], points[i][1]], [points[i+1][0], points[i+1][1]]],
+            { color: '#2196F3', weight: Math.max(2, widthM / 50), opacity: 0.3 }).addTo(previewLayer);
+    }
+}
+
+function latLonBounds(lat, lon, radiusM) {
+    const dLat = radiusM / 111320;
+    const dLon = radiusM / (111320 * Math.cos(lat * Math.PI / 180));
+    return [[lat - dLat, lon - dLon], [lat + dLat, lon + dLon]];
+}
+
+// ------------------------------------------------------------
+// Статистика
+// ------------------------------------------------------------
+async function updateStats() {
+    if (points.length < 2) {
+        document.getElementById('statLength').textContent = '— км';
+        document.getElementById('statTiles').textContent = '—';
+        return;
+    }
+    const widthM = parseFloat(document.getElementById('widthM').value) || 500;
+    const patchKm = (parseFloat(document.getElementById('patchKm').value) || 1000) / 1000;
+        const zoom = 19;
+
+        try {
+            const resp = await fetch('/api/estimate', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ points, zoom, width_m: widthM, patch_km: patchKm })
+        });
+        const data = await resp.json();
+        document.getElementById('statLength').textContent = data.length_km + ' км';
+        document.getElementById('statTiles').textContent = '~' + data.tiles + ' тайлов';
+    } catch (e) {
+        console.error(e);
+    }
+}
+
+// ------------------------------------------------------------
+// Маршрутизация по дорогам (OSRM)
+// ------------------------------------------------------------
+async function routeByRoad() {
+    if (points.length < 2) {
+        alert('Нужно минимум 2 точки. Кликните ключевые точки на карте.');
+        return;
+    }
+    const profile = document.getElementById('osrmProfile').value;
+    const btn = document.getElementById('osrmBtn');
+    btn.disabled = true;
+    btn.textContent = 'Прокладка...';
+
+    try {
+        const resp = await fetch('/api/route_by_road', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ waypoints: points, profile })
+        });
+        const data = await resp.json();
+        if (data.ok) {
+            // Сохраняем ключевые точки как waypoints
+            const waypoints = points.slice();
+            // Заменяем точки на детальный маршрут
+            points = data.points;
+            renderPoints();
+            drawRoute();
+            updateStats();
+            // Сохраняем waypoints для отображения
+            drawWaypoints(waypoints);
+            if (points.length > 0) {
+                map.fitBounds(points.map(p => [p[0], p[1]]), { padding: [50, 50] });
+            }
+        } else {
+            alert('Ошибка: ' + (data.error || 'не удалось проложить маршрут'));
+        }
+    } catch (e) {
+        alert('Ошибка: ' + e.message);
+    } finally {
+        btn.disabled = false;
+        btn.textContent = 'Проложить по дорогам';
+    }
+}
+
+let waypointLayer = null;
+function drawWaypoints(wps) {
+    if (waypointLayer) map.removeLayer(waypointLayer);
+    waypointLayer = L.layerGroup().addTo(map);
+    wps.forEach((p, i) => {
+        L.circleMarker([p[0], p[1]], {
+            radius: 6, color: '#FF6600', fillColor: '#FF6600',
+            fillOpacity: 0.8, weight: 2
+        }).bindTooltip(`WP ${i}`).addTo(waypointLayer);
+    });
+}
+
+// ------------------------------------------------------------
+// Импорт из Яндекс.Карт
+// ------------------------------------------------------------
+async function importYandex() {
+    const text = document.getElementById('yandexInput').value.trim();
+    if (!text) return;
+
+    try {
+        const resp = await fetch('/api/import/yandex', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ text })
+        });
+        const data = await resp.json();
+        if (data.ok && data.points.length > 0) {
+            points = data.points.map(p => [p[0], p[1]]);
+            renderPoints();
+            drawRoute();
+            updateStats();
+            if (points.length > 0) {
+                map.fitBounds(points.map(p => [p[0], p[1]]), { padding: [50, 50] });
+            }
+        } else {
+            alert('Не удалось извлечь координаты из ссылки');
+        }
+    } catch (e) {
+        alert('Ошибка импорта: ' + e.message);
+    }
+}
+
+// ------------------------------------------------------------
+// Сохранение
+// ------------------------------------------------------------
+async function saveRoute() {
+    try {
+        const resp = await fetch('/api/route', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ name: 'Маршрут', source: 'web', points })
+        });
+        const data = await resp.json();
+        if (data.ok) {
+            alert('Сохранено: ' + data.points + ' точек, ' + data.length_km + ' км');
+        }
+    } catch (e) {
+        alert('Ошибка: ' + e.message);
+    }
+}
+
+// ------------------------------------------------------------
+// Загрузка карты
+// ------------------------------------------------------------
+async function downloadMap() {
+    if (points.length < 2) {
+        alert('Нужно минимум 2 точки');
+        return;
+    }
+    const source = document.getElementById('providerSelect').value;
+    const resolution = parseFloat(document.getElementById('resolution').value) || 0.5;
+    const widthM = parseFloat(document.getElementById('widthM').value) || 500;
+    const patchKm = (parseFloat(document.getElementById('patchKm').value) || 1000) / 1000;
+
+    if (!confirm(`Скачать карту?\nПоставщик: ${source}\nТочек: ${points.length}\nРазрешение: ${resolution} м/px`)) return;
+
+    try {
+        const resp = await fetch('/api/download', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ points, source, resolution, width_m: widthM, patch_km: patchKm })
+        });
+        const data = await resp.json();
+        if (data.ok) {
+            document.getElementById('logArea').style.display = 'block';
+            document.getElementById('downloadStatus').style.display = 'block';
+            document.getElementById('downloadProgress').style.display = 'block';
+            document.getElementById('downloadBtn').style.display = 'none';
+            document.getElementById('stopBtn').style.display = 'block';
+            pollDownloadStatus();
+        } else {
+            alert(data.error || 'Ошибка запуска');
+        }
+    } catch (e) {
+        alert('Ошибка: ' + e.message);
+    }
+}
+
+let pollTimer = null;
+
+async function stopDownload() {
+    if (!confirm('Остановить скачивание?')) return;
+    try {
+        await fetch('/api/download/stop', { method: 'POST' });
+        if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+        document.getElementById('downloadStatus').style.display = 'none';
+        document.getElementById('downloadProgress').style.display = 'none';
+        document.getElementById('stopBtn').style.display = 'none';
+        document.getElementById('downloadBtn').style.display = 'block';
+    } catch (e) {}
+}
+
+function pollDownloadStatus() {
+    if (pollTimer) clearInterval(pollTimer);
+    pollTimer = setInterval(async () => {
+        try {
+            const resp = await fetch('/api/download/status');
+            const data = await resp.json();
+
+            // Лог
+            const logEl = document.getElementById('logArea');
+            logEl.textContent = data.log || '(пусто)';
+            logEl.scrollTop = logEl.scrollHeight;
+
+            // Прогресс-бар (текущий этап)
+            const progEl = document.getElementById('downloadProgress');
+            progEl.style.display = 'block';
+            if (data.progress) {
+                document.getElementById('progressStage').textContent = data.progress.name;
+                document.getElementById('progressPercent').textContent = data.progress.percent + '%';
+                document.getElementById('progressBar').style.width = data.progress.percent + '%';
+                document.getElementById('progressCount').textContent =
+                    data.progress.current + ' / ' + data.progress.total;
+            } else {
+                document.getElementById('progressStage').textContent = 'Подготовка...';
+                document.getElementById('progressPercent').textContent = '';
+                document.getElementById('progressBar').style.width = '0%';
+                document.getElementById('progressCount').textContent = '';
+            }
+
+            // Список этапов
+            if (data.stages && data.stages.length > 0) {
+                const stagesEl = document.getElementById('stagesList');
+                let html = '';
+                data.stages.forEach(s => {
+                    const cls = s.done ? 'bg-success' : 'bg-primary';
+                    const striped = s.done ? '' : 'progress-bar-striped progress-bar-animated';
+                    const check = s.done ? '✓' : '';
+                    html += `
+                        <div class="d-flex justify-content-between align-items-center mb-1">
+                            <span class="small ${s.done ? 'text-success' : 'text-muted'}">${check} ${s.name}</span>
+                            <span class="small">${s.percent}%</span>
+                        </div>
+                        <div class="progress mb-1" style="height: 5px;">
+                            <div class="progress-bar ${cls} ${striped}" style="width: ${s.percent}%;"></div>
+                        </div>`;
+                });
+                stagesEl.innerHTML = html;
+            }
+
+            if (!data.running) {
+                clearInterval(pollTimer);
+                pollTimer = null;
+                document.getElementById('downloadStatus').style.display = 'none';
+                document.getElementById('stopBtn').style.display = 'none';
+                document.getElementById('downloadBtn').style.display = 'block';
+                document.getElementById('progressBar').classList.remove('progress-bar-animated');
+                if (data.progress) {
+                    document.getElementById('progressStage').textContent = 'Завершено';
+                    document.getElementById('progressBar').style.width = '100%';
+                    document.getElementById('progressPercent').textContent = '100%';
+                }
+            }
+        } catch (e) {}
+    }, 2000);
+}
+
+// ------------------------------------------------------------
+// Загрузка маршрута при старте
+// ------------------------------------------------------------
+async function loadRoute() {
+    try {
+        const resp = await fetch('/api/route');
+        const data = await resp.json();
+        if (data.points && data.points.length > 0) {
+            points = data.points.map(p => [p[0], p[1]]);
+            renderPoints();
+            drawRoute();
+            updateStats();
+            map.fitBounds(points.map(p => [p[0], p[1]]), { padding: [50, 50] });
+        }
+    } catch (e) {}
+}
+
+async function loadProviders() {
+    try {
+        const resp = await fetch('/api/providers');
+        const data = await resp.json();
+        Object.assign(providers, data);
+    } catch (e) {}
+}
+
+// ------------------------------------------------------------
+// Инициализация
+// ------------------------------------------------------------
+window.addEventListener('DOMContentLoaded', async () => {
+    await loadProviders();
+    initMap();
+
+    document.getElementById('yandexBtn').onclick = importYandex;
+    document.getElementById('osrmBtn').onclick = routeByRoad;
+    document.getElementById('yandexInput').addEventListener('keydown', e => {
+        if (e.key === 'Enter') importYandex();
+    });
+    document.getElementById('clearBtn').onclick = () => {
+        if (confirm('Очистить все точки?')) {
+            points = [];
+            renderPoints();
+            drawRoute();
+            updateStats();
+        }
+    };
+    document.getElementById('saveBtn').onclick = saveRoute;
+    document.getElementById('downloadBtn').onclick = downloadMap;
+    document.getElementById('stopBtn').onclick = stopDownload;
+
+    document.getElementById('providerSelect').onchange = (e) => {
+        setTileProvider(e.target.value);
+    };
+    document.getElementById('widthM').onchange = () => { drawPreview(); updateStats(); };
+    document.getElementById('patchKm').onchange = () => { drawPreview(); updateStats(); };
+
+    await loadRoute();
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,129 @@
+Panels:
+  - Class: rviz_common/Displays
+    Name: Displays
+    Property Tree Widget:
+      Expanded:
+        - /Global Options1
+        - /TF1
+        - /Odometry1
+        - /Pose1
+        - /Camera1
+      Splitter Ratio: 0.5
+  - Class: rviz_common/Selection
+    Name: Selection
+  - Class: rviz_common/Tool Properties
+    Name: Tool Properties
+  - Class: rviz_common/Views
+    Name: Views
+
+Visualization Manager:
+  Class: ""
+  Displays:
+    - Class: rviz_default_plugins/TF
+      Enabled: true
+      Name: TF
+      Show Arrows: true
+      Show Axes: true
+      Show Names: true
+      Update Interval: 0
+      Vehicle Width: 0.1
+      Alpha: 1
+      Buffer Length: 1
+
+    - Class: rviz_default_plugins/Odometry
+      Enabled: true
+      Name: Odometry
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /aerial_nav/odometry
+      Shape:
+        Alpha: 1
+        Color: 255; 156; 0
+        Arrow Width: 0.3
+        Head Length: 0.5
+        Head Radius: 0.2
+        Shaft Length: 1.0
+        Shaft Radius: 0.1
+      Pose Covariance:
+        Orientation:
+          Max Color R: 255
+          Max Color G: 0
+          Max Color B: 0
+          Min Color R: 0
+          Min Color G: 255
+          Min Color B: 0
+          Value: true
+        Position:
+          Max Color R: 255
+          Max Color G: 0
+          Max Color B: 0
+          Min Color R: 0
+          Min Color G: 255
+          Min Color B: 0
+          Value: true
+      Value: true
+
+    - Class: rviz_default_plugins/Pose
+      Enabled: true
+      Name: Pose
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /aerial_nav/pose
+      Shape:
+        Alpha: 1
+        Arrow Width: 0.5
+        Head Length: 0.3
+        Head Radius: 0.1
+        Shaft Length: 1.0
+        Shaft Radius: 0.05
+      Value: true
+
+    - Class: rviz_default_plugins/Image
+      Enabled: true
+      Name: Camera
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Best Effort
+        Value: /camera/image_raw
+      Value: true
+
+  Enabled: true
+  Global Options:
+    Background Color: 48; 48; 48
+    Fixed Frame: map
+    Frame Rate: 30
+  Name: root
+  Tools:
+    - Class: rviz_default_plugins/Interact
+    - Class: rviz_default_plugins/MoveCamera
+  Value: true
+  Views:
+    Current:
+      Class: rviz_default_plugins/Orbit
+      Distance: 50
+      Enable Stereo Rendering:
+        Stereo Eye Separation: 0.06
+        Stereo Focal Distance: 10
+        Swap Stereo Eyes: false
+        Value: false
+      Focal Point:
+        X: 0
+        Y: 0
+        Z: 0
+      Focal Shape Fixed Size: true
+      Focal Shape Size: 0.05
+      Invert Z Axis: false
+      Name: Current Orbit
+      Near Clip Distance: 0.01
+      Pitch: 0.5
+      Target Frame: base_link
+      Value: Orbit (rviz
+      Yaw: 0.5

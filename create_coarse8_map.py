@@ -1,0 +1,40 @@
+"""
+Создание coarse карты низкого разрешения (8 м/px) из оригинальной (0.5 м/px).
+16x downsampling для глобального контекста.
+"""
+
+import numpy as np
+from PIL import Image
+import os
+
+Image.MAX_IMAGE_PIXELS = None
+
+MAP_PATH = '/home/alex/aerial-nav/map_cache/highres/highres_46.2650_33.3732_z18.png'
+OUTPUT_PATH = '/home/alex/aerial-nav/map_cache/coarse8_46.2650_33.3732_z14.png'
+
+HIGHRES_RESOLUTION = 0.5  # м/пиксель
+COARSE_RESOLUTION = 8.0   # м/пиксель
+SCALE_FACTOR = int(COARSE_RESOLUTION / HIGHRES_RESOLUTION)  # 16x
+
+print(f"Loading highres map: {MAP_PATH}")
+img = np.array(Image.open(MAP_PATH).convert('RGB'))
+h, w = img.shape[:2]
+print(f"  Highres: {h}x{w}, resolution={HIGHRES_RESOLUTION} м/px")
+print(f"  Physical size: {w*HIGHRES_RESOLUTION/1000:.1f}x{h*HIGHRES_RESOLUTION/1000:.1f} km")
+
+# Resize 16x down
+coarse = Image.fromarray(img).resize(
+    (w // SCALE_FACTOR, h // SCALE_FACTOR),
+    Image.LANCZOS
+)
+coarse_np = np.array(coarse)
+
+print(f"\nCoarse8 map: {coarse_np.shape[0]}x{coarse_np.shape[1]}")
+print(f"  Physical size: {coarse_np.shape[1]*COARSE_RESOLUTION/1000:.1f}x{coarse_np.shape[0]*COARSE_RESOLUTION/1000:.1f} km")
+print(f"  Scale factor: {SCALE_FACTOR}x")
+
+# Save
+os.makedirs(os.path.dirname(OUTPUT_PATH), exist_ok=True)
+Image.fromarray(coarse_np).save(OUTPUT_PATH)
+print(f"\nSaved: {OUTPUT_PATH}")
+print(f"  Size: {os.path.getsize(OUTPUT_PATH) / 1e6:.1f} MB")

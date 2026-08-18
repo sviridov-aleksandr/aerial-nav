@@ -1,0 +1,51 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environments
+venv/
+.venv/
+my_project_env/
+
+# Model weights (large files)
+*.pth
+*.pt
+*.onnx
+
+# Map data (large files)
+map_cache/
+*.tif
+*.tiff
+
+# Training data (large files)
+training_data/
+training_data_moscow/
+
+# Logs
+*.log
+download.log
+download.pid
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# ROS build
+aerial_nav_ros/build/
+aerial_nav_ros/install/
+aerial_nav_ros/log/
+
+# Models weights
+models/weights/
+route_map_index.faiss
+route_map_index_meta.npy
