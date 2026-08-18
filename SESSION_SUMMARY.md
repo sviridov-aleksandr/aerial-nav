@@ -159,12 +159,20 @@
 - `MAVLinkBridge`: UART (921600 бод) / UDP (SITL 127.0.0.1:14540), фоновый поток телеметрии (ATTITUDE, VFR_HUD, GLOBAL_POSITION_INT, HEARTBEAT, SYS_STATUS), отправка `VISION_POSITION_ESTIMATE` с ковариацией из EKF.
 - `NavigationPipeline`: камера (RTSP OpenIPC / `--sim-camera` для SITL) → вырезка 512×512 → компенсация рыскания (reflect-padding) → LocalMatcher (локальный поиск ±50 м) → EKF predict+correct → отправка позиции в FC.
 - Инициализация из GPS: `GLOBAL_POSITION_INT` → `_gps_to_map_px()` (плоская проекция, origin 46.34N 31.95E).
-- Зависимость: `pymavlink 2.4.49` установлена в venv.
-- Синтаксис проверен (`py_compile`). Запуск: `--sitl --sim-camera` (тест) или `--device /dev/ttyTHS1` (реальное железо).
+- Зависимость: `pymavlink 2.4.49`, `pyserial 3.5` установлены в venv.
+- Запуск: `--sitl --sim-camera` (тест) или `--device /dev/ttyTHS1` (реальное железо).
+
+### Подключение реального контроллера (USB)
+
+- Подключен CUAV X7+ Pro по USB: два порта `/dev/tyACM0` и `/dev/tyACM1` (USB ID 1209:5740 CUAV-X7-bdshot).
+- Оба отвечают heartbeat: **ArduPilot (autopilot=3), тип 1 = Fixed Wing**.
+- Добавлен автодетект порта в `mavlink_bridge.py` (`_auto_detect_port()`): поиск /dev/tyACM*, проверка heartbeat + телеметрии, выбор лучшего (score).
+- Тест моста с реальным FC: 312 сообщений за 10 сек (~31 msg/s), телеметрия ATTITUDE/VFR_HUD/GPS работает, GPS нет в помещении (норма).
+- Baud для USB CDC: 115200 (не 921600 — это для UART-телеметрии).
 
 ### Статус Run4 (на момент обновления)
 
-- Эпоха 12/15 (72%), Acc 96.6%, этап 2 (полный набор искажений).
+- Эпоха 13/15 (56%), Acc 97.1%, этап 2 (полный набор искажений).
 - После 15 эпох: финальный flight_simulation_test → train_dynamics → train_route → test_route_dnepr.
 
 ---

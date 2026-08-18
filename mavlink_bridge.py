@@ -113,8 +113,77 @@ class MAVLinkBridge:
         self.vision_sent = 0
         self.last_heartbeat = 0
 
+    def _auto_detect_port(self) -> str:
+        """
+        Автодетект USB-порта полётного контроллера CUAV.
+
+        Ищет /dev/ttyACM* и /dev/ttyUSB*, проверяет MAVLink heartbeat
+        и наличие телеметрии (ATTITUDE/VFR_HUD). Возвращает лучший порт.
+        """
+        import glob
+
+        candidates = sorted(
+            glob.glob('/dev/ttyACM*') + glob.glob('/dev/ttyUSB*')
+        )
+        if not candidates:
+            raise RuntimeError("[MAVLink] Не найдено USB-портов (/dev/ttyACM*, /dev/ttyUSB*)")
+
+        print(f"[MAVLink] Поиск FC среди портов: {candidates}")
+
+        best_port = None
+        best_score = -1
+
+        for port in candidates:
+            try:
+                conn = mavutil.mavlink_connection(port, baud=115200, dialect="ardupilotmega")
+                msg = conn.wait_heartbeat(timeout=3)
+                if msg is None:
+                    conn.close()
+                    print(f"[MAVLink] {port}: нет heartbeat")
+                    continue
+
+                # Запрашиваем потоки и считаем телеметрию
+                conn.mav.request_data_stream_send(
+                    msg.get_srcSystem(), msg.get_srcComponent(),
+                    mavutil.mavlink.MAV_DATA_STREAM_EXTRA1, 5, 1)
+                conn.mav.request_data_stream_send(
+                    msg.get_srcSystem(), msg.get_srcComponent(),
+                    mavutil.mavlink.MAV_DATA_STREAM_EXTRA2, 5, 1)
+
+                got = {}
+                t0 = time.time()
+                while time.time() - t0 < 4:
+                    m = conn.recv_match(
+                        type=['ATTITUDE', 'VFR_HUD', 'GLOBAL_POSITION_INT'],
+                        blocking=True, timeout=1)
+                    if m:
+                        got[m.get_type()] = got.get(m.get_type(), 0) + 1
+                    if len(got) >= 3:
+                        break
+
+                score = sum(got.values())
+                print(f"[MAVLink] {port}: heartbeat OK, телеметрия {got} (score={score})")
+                conn.close()
+
+                if score > best_score:
+                    best_score = score
+                    best_port = port
+
+            except Exception as e:
+                print(f"[MAVLink] {port}: ошибка {e}")
+
+        if best_port is None:
+            raise RuntimeError("[MAVLink] Не найден порт с MAVLink heartbeat")
+
+        print(f"[MAVLink] Выбран порт: {best_port} (score={best_score})")
+        return best_port
+
     def connect(self):
         """Подключение к FC (UART или UDP для SITL)."""
+        # Автодетект порта, если не указан явно
+        if not self.config.device.startswith("udp") and not self.config.device.startswith("/dev/"):
+            self.config.device = self._auto_detect_port()
+
         print(f"[MAVLink] Подключение к {self.config.device}...")
 
         if self.config.device.startswith("udp"):
@@ -550,9 +619,10 @@ def main():
     parser.add_argument('--sitl', action='store_true',
                         help='Режим SITL (UDP 127.0.0.1:14540)')
     parser.add_argument('--device', type=str, default=None,
-                        help='UART устройство (например /dev/ttyTHS1)')
-    parser.add_argument('--baud', type=int, default=921600,
-                        help='Скорость UART')
+                        help='UART устройство (например /dev/ttyACM0). '
+                             'Если не указано — автодетект USB-порта CUAV')
+    parser.add_argument('--baud', type=int, default=115200,
+                        help='Скорость UART (USB CDC: 115200, телеметрия: 57600)')
     parser.add_argument('--model', type=str, default='region_model.pth',
                         help='Путь к модели')
     parser.add_argument('--map', type=str,
@@ -577,6 +647,9 @@ def main():
     elif args.device:
         config.device = args.device
         config.baud = args.baud
+    else:
+        # Автодетект USB-порта CUAV
+        config.device = "auto"
 
     # Запуск
     pipeline = NavigationPipeline(config)
