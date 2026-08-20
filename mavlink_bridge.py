@@ -27,10 +27,10 @@ mavlink_bridge.py — мост между полётным контроллер�
   4. bridge → FC: VISION_POSITION_ESTIMATE (x,y,z + attitude + covariance)
 
 Запуск (SITL):
-  /home/alex/my_project_env/bin/python mavlink_bridge.py --sitl
+  python3 mavlink_bridge.py --sitl
 
 Запуск (реальное железо):
-  /home/alex/my_project_env/bin/python mavlink_bridge.py --device /dev/ttyTHS1 --baud 921600
+  python3 mavlink_bridge.py --device /dev/ttyTHS1 --baud 921600
 """
 
 import os

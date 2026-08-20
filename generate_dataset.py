@@ -11,8 +11,8 @@ Dataset Generator — генерация датасета для обучени�
 
 Пример использования:
   python3 generate_dataset.py \\
-    --map /home/alex/aerial-nav/map_cache/antiuav_route_strip.png \\
-    --output /home/alex/aerial-nav/training_data/route_dataset \\
+    --map map_cache/antiuav_route_strip.png \\
+    --output training_data/route_dataset \\
     --tile-size 512 \\
     --stride 256 \\
     --neg-multiplier 3

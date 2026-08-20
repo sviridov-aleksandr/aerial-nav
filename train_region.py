@@ -2,10 +2,17 @@
 """
 train_region.py — обучение сиамской сети на региональной карте.
 
-Curriculum learning, этап 1: обучение на регионе (39×30 км, 70K тайлов).
-  - TripletLoss (anchor=кадр камеры, positive=карта, negative=другой тайл)
-  - Расширенные аугментации (масштаб, перспектива, туман, облака, шум)
-  - ResNet-18 с ImageNet pretrained weights (torchvision)
+Обучение по правилу многоуровневых индексов:
+  - Каждый триплет привязан к уровню индекса (высоте полёта)
+  - positive: патч уровня (512/1024/1792 → resize 512) — эталон индекса
+  - anchor: тот же участок + аугментации (поворот, перспектива, сезоность, шум)
+  - negative: патч другого участка того же уровня
+  - Масштаб заложен в размере патча уровня, не в аугментации
+
+Curriculum: 3 этапа × 5 эпох
+  Этап 0 (1-5):   фотометрия + шум
+  Этап 1 (6-10):  + поворот ±30° + перспектива + лёгкая сезоность + motion blur
+  Этап 2 (11-15): полный набор (погода + сезоность + шум + динамика)
 
 Использование:
   python3 train_region.py
@@ -21,7 +28,8 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 import time
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, PROJECT_DIR)
 
 from siamese_network import AerialFeatureExtractor, TripletLoss
 from siamese_triplet_dataset import TripletDataset
@@ -30,10 +38,10 @@ multiprocessing.set_start_method('fork', force=True)
 
 
 def main():
-    # Параметры
-    MAP_PATH = '/home/alex/aerial-nav/map_cache/region_google.tif'
-    COORDS_PATH = '/home/alex/aerial-nav/training_data/region_dataset/positive_coords.npy'
-    OUTPUT_PATH = 'region_model.pth'
+    # Параметры (относительные пути — переносимость проекта)
+    MAP_PATH = os.path.join(PROJECT_DIR, 'map_cache/region_google.tif')
+    COORDS_PATH = os.path.join(PROJECT_DIR, 'training_data/region_dataset/positive_coords.npy')
+    OUTPUT_PATH = os.path.join(PROJECT_DIR, 'region_model.pth')
     EPOCHS = 15
     BATCH_SIZE = 32
     LR = 1e-3
@@ -77,9 +85,10 @@ def main():
     print(f"[Train] Датасет: {len(dataset)} триплетов")
     print(f"[Train] Шагов на эпоху: {len(loader)}")
     print(f"[Train] Curriculum: 3 этапа × 5 эпох")
-    print(f"  Этап 1 (эпохи 1-5):  масштаб (scale 0.25-3.5, высоты 100-1200 м)")
-    print(f"  Этап 2 (эпохи 6-10): масштаб + поворот (±30°) + лёгкий наклон камеры")
-    print(f"  Этап 3 (эпохи 11-15): полный набор (наклон + погода + шум)")
+    print(f"  Этап 0 (эпохи 1-5):   фотометрия + шум")
+    print(f"  Этап 1 (эпохи 6-10):  + поворот ±30° + перспектива + сезоность + motion blur")
+    print(f"  Этап 2 (эпохи 11-15): полный набор (погода + сезоность + динамика)")
+    print(f"[Train] Многоуровневый индекс: L0(512), L1(1024), L2(1792)")
 
     def curriculum_level(epoch: int) -> int:
         """Этап curriculum по эпохе.

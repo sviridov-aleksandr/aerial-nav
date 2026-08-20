@@ -33,7 +33,7 @@ ROUTE_GPS = [
 ]
 
 # Параметры карты
-MAP_PATH = '/home/alex/aerial-nav/map_cache/highres/highres_46.2650_33.3732_z18.png'
+MAP_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'map_cache/highres/highres_46.2650_33.3732_z18.png')
 MAP_CENTER_LAT = 46.2650
 MAP_CENTER_LON = 33.3732
 MAP_SIZE = 17920  # px
@@ -126,7 +126,7 @@ def test_route():
     # 3. Загрузка компонентов
     print("\n[3/4] Loading components...")
     matcher = LocalMatcher(
-        model_path='/home/alex/aerial-nav/siamese_model_kalanchak_v2.pth',
+        model_path=os.path.join(os.path.dirname(os.path.abspath(__file__)), 'siamese_model_kalanchak_v2.pth'),
         map_path=MAP_PATH,
         tile_size=224,
         resolution=MAP_RESOLUTION

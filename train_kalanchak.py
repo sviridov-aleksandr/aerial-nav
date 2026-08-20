@@ -11,7 +11,7 @@
 
 import sys
 import os
-sys.path.insert(0, '/home/alex/aerial-nav')
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import torch
 import torch.nn as nn
@@ -193,7 +193,7 @@ def train():
     print("LOADING MAPS")
     print("=" * 60)
 
-    map_dir = '/home/alex/aerial-nav/map_cache/highres'
+    map_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'map_cache/highres')
     map_paths = [
         os.path.join(map_dir, 'highres_46.2650_33.3732_z18.png'),
     ]
@@ -232,7 +232,7 @@ def train():
 
     epochs = 60
     best_loss = float('inf')
-    output_path = '/home/alex/aerial-nav/siamese_model_kalanchak.pth'
+    output_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'siamese_model_kalanchak.pth')
 
     print(f"[Train] Epochs: {epochs}, Batch: 32, Margin: 0.3\n")
 

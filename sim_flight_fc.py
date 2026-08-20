@@ -18,7 +18,7 @@ sim_flight_fc.py — симуляция полёта на реальном по�
   - Мы только отправляем позицию, не управляем полётом
 
 Запуск:
-  /home/alex/my_project_env/bin/python sim_flight_fc.py --altitude 1000 --speed 22
+  python3 sim_flight_fc.py --altitude 1000 --speed 22
 
   --altitude  высота полёта (м), по умолчанию 1000
   --speed     скорость (м/с), по умолчанию 22

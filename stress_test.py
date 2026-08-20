@@ -10,7 +10,7 @@ stress_test.py — стресс-тест модели на всех уровня
   2. Кадр камеры с высоты 700/1000/1200 м → поиск в индексе (реалистичный)
 
 Запуск:
-  /home/alex/my_project_env/bin/python stress_test.py
+  python3 stress_test.py
 """
 
 import os

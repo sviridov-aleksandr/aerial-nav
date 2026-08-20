@@ -8,8 +8,8 @@ SiameseDataset — PyTorch Dataset для он-лет обучения сиам�
   from torch.utils.data import DataLoader
   
   dataset = SiameseDataset(
-      map_path='/home/alex/aerial-nav/map_cache/antiuav_route_strip.tif',
-      coords_path='/home/alex/aerial-nav/training_data/route_dataset/positive_coords.npy',
+      map_path='map_cache/antiuav_route_strip.tif',
+      coords_path='training_data/route_dataset/positive_coords.npy',
       tile_size=512,
       neg_multiplier=3
   )
@@ -177,8 +177,8 @@ class SiameseDataset(Dataset):
 def main():
     """Тестовый запуск датасета."""
     dataset = SiameseDataset(
-        map_path='/home/alex/aerial-nav/map_cache/antiuav_route_strip.tif',
-        coords_path='/home/alex/aerial-nav/training_data/route_dataset/positive_coords.npy',
+        map_path='map_cache/antiuav_route_strip.tif',
+        coords_path='training_data/route_dataset/positive_coords.npy',
         tile_size=512,
         neg_multiplier=3,
         augment=True

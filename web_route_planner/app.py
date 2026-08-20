@@ -11,7 +11,7 @@ web_route_planner — веб-интерфейс планирования мар�
   - Запуск скачивания карты (фоновый процесс)
 
 Запуск:
-  /home/alex/my_project_env/bin/python app.py
+  python3 app.py
   Открыть http://localhost:8080
 """
 
@@ -291,7 +291,7 @@ def api_download():
     cmd = (
         f'cd {PROJECT_DIR} && '
         f'PYTHONUNBUFFERED=1 '
-        f'/home/alex/my_project_env/bin/python route_strip_map.py '
+        f'{sys.executable} route_strip_map.py '
         f'--route {route_args} '
         f'--source {source} '
         f'--resolution {resolution} '

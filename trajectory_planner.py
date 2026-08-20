@@ -382,7 +382,8 @@ def test_trajectory_planning():
                   f"heading={wp.heading:.1f}°, speed={wp.speed:.1f} м/с)")
 
         # Визуализация
-        planner.visualize(waypoints, output_path='/home/alex/aerial-nav/trajectory.png')
+        planner.visualize(waypoints, output_path=os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), 'trajectory.png'))
     else:
         print("[Planner] Путь не найден!")
 

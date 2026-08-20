@@ -15,7 +15,7 @@ analyze_uniqueness.py — анализ однородности ландшафт
   - Проверяет recall (чистый тайл → поиск) по квартилям
 
 Запуск:
-  /home/alex/my_project_env/bin/python analyze_uniqueness.py
+  python3 analyze_uniqueness.py
 """
 
 import os

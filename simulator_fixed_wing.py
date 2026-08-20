@@ -218,9 +218,9 @@ def test_fixed_wing_simulation():
     from PIL import Image as PILImage
     
     # Загрузка карты (используем карту Каланчака — сельхоз поля)
-    map_path = '/home/alex/aerial-nav/map_cache/highres/highres_46.2650_33.3732_z18.png'
+    map_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'map_cache/highres/highres_46.2650_33.3732_z18.png')
     if not os.path.exists(map_path):
-        map_path = '/home/alex/aerial-nav/map_cache/highres/highres_55.7550_37.6173_z18.png'
+        map_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'map_cache/highres/highres_55.7550_37.6173_z18.png')
     map_image = np.array(PILImage.open(map_path))
     
     print("=" * 60)

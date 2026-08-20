@@ -40,8 +40,8 @@ def test_full_pipeline():
     # 1. Загрузка компонентов
     print("\n[1/4] Loading components...")
     matcher = LocalMatcher(
-        model_path='/home/alex/aerial-nav/siamese_model_kalanchak_v2.pth',
-        map_path='/home/alex/aerial-nav/map_cache/highres/highres_46.2650_33.3732_z18.png',
+        model_path=os.path.join(os.path.dirname(os.path.abspath(__file__)), 'siamese_model_kalanchak_v2.pth'),
+        map_path=os.path.join(os.path.dirname(os.path.abspath(__file__)), 'map_cache/highres/highres_46.2650_33.3732_z18.png'),
         tile_size=224,
         resolution=0.5
     )
@@ -50,7 +50,7 @@ def test_full_pipeline():
 
     # 2. Симуляция полёта
     print("\n[2/4] Simulating flight...")
-    map_img = np.array(Image.open('/home/alex/aerial-nav/map_cache/highres/highres_46.2650_33.3732_z18.png').convert('RGB'))
+    map_img = np.array(Image.open(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'map_cache/highres/highres_46.2650_33.3732_z18.png')).convert('RGB'))
     h, w = map_img.shape[:2]
 
     # Маршрут: 5 км по карте

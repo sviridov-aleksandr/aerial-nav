@@ -6,7 +6,7 @@ Tile Indexer — генерация ANN-индекса (FAISS) по эмбедд
 Пример использования:
   # Генерация индекса
   python3 tile_indexer.py --model siamese_model_kalanchak_v2.pth \\
-      --tiles /home/alex/aerial-nav/map_cache/strips/ \\
+      --tiles map_cache/strips/ \\
       --output tile_index.faiss
 
   # Поиск по кадру

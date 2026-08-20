@@ -12,7 +12,7 @@ quick_sanity_test.py — быстрая проверка качества мод
   - Среднее расстояние d(anchor, positive) vs d(anchor, nearest)
 
 Запуск (пока идёт обучение на GPU):
-  /home/alex/my_project_env/bin/python quick_sanity_test.py
+  python3 quick_sanity_test.py
 """
 
 import os

@@ -18,7 +18,8 @@ from tqdm import tqdm
 import time
 
 # Добавляем проект в путь
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, PROJECT_DIR)
 
 from siamese_network import AerialFeatureExtractor, ContrastiveLoss
 from siamese_dataset import SiameseDataset
@@ -28,11 +29,11 @@ multiprocessing.set_start_method('fork', force=True)
 
 
 def main():
-    # Параметры
-    MAP_PATH = '/home/alex/aerial-nav/map_cache/antiuav_route_strip.tif'
-    COORDS_PATH = '/home/alex/aerial-nav/training_data/route_dataset/positive_coords.npy'
-    MODEL_PATH = 'siamese_model_kalanchak_v2.pth'
-    OUTPUT_PATH = 'route_model.pth'
+    # Параметры (относительные пути)
+    MAP_PATH = os.path.join(PROJECT_DIR, 'map_cache/antiuav_route_strip.tif')
+    COORDS_PATH = os.path.join(PROJECT_DIR, 'training_data/route_dataset/positive_coords.npy')
+    MODEL_PATH = os.path.join(PROJECT_DIR, 'siamese_model_kalanchak_v2.pth')
+    OUTPUT_PATH = os.path.join(PROJECT_DIR, 'route_model.pth')
     EPOCHS = 10
     BATCH_SIZE = 16
     LR = 1e-4

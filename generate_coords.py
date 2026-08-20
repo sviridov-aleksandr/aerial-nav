@@ -6,8 +6,8 @@ Generate Coords — генерация координат тайлов для о
 
 Использование:
   python3 generate_coords.py \
-    --map /home/alex/aerial-nav/map_cache/antiuav_route_strip.tif \
-    --output /home/alex/aerial-nav/training_data/route_dataset \
+    --map map_cache/antiuav_route_strip.tif \
+    --output training_data/route_dataset \
     --tile-size 512 \
     --stride 256
 """

@@ -235,15 +235,15 @@ def test_ransac():
 
     # Загружаем модель
     model = AerialFeatureExtractor(embedding_dim=256).to(DEVICE)
-    ckpt = torch.load('/home/alex/aerial-nav/siamese_model_kalanchak_v2.pth',
+    ckpt = torch.load(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'siamese_model_kalanchak_v2.pth'),
                       map_location=DEVICE, weights_only=False)
     model.load_state_dict(ckpt['model_state_dict'])
     model.eval()
 
     # Загружаем карты
     print("Loading maps...")
-    coarse8_map = np.array(Image.open('/home/alex/aerial-nav/map_cache/coarse8_46.2650_33.3732_z14.png').convert('RGB'))
-    fine_map = np.array(Image.open('/home/alex/aerial-nav/map_cache/highres/highres_46.2650_33.3732_z18.png').convert('RGB'))
+    coarse8_map = np.array(Image.open(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'map_cache/coarse8_46.2650_33.3732_z14.png')).convert('RGB'))
+    fine_map = np.array(Image.open(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'map_cache/highres/highres_46.2650_33.3732_z18.png')).convert('RGB'))
     print(f"  Coarse8: {coarse8_map.shape}")
     print(f"  Fine: {fine_map.shape}")
 

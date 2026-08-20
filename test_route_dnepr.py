@@ -19,7 +19,7 @@ test_route_dnepr.py — реалистичный тест навигации н�
   - Модель: region_model.pth (после curriculum learning на регионе)
 
 Запуск:
-  /home/alex/my_project_env/bin/python test_route_dnepr.py
+  python3 test_route_dnepr.py
 """
 
 import os

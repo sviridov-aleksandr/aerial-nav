@@ -1,16 +1,20 @@
 """
-siamese_triplet_dataset.py — датасет для triplet-обучения сиамской сети.
+siamese_triplet_dataset.py — датасет для triplet-обучения сиамской сети
+на основе правила многоуровневых индексов.
 
-Генерирует триплеты (anchor, positive, negative) на лету:
-  - anchor: кадр камеры (патч из карты с масштабом + аугментации)
-  - positive: тайл карты без аугментаций (эталон)
-  - negative: другой тайл (hard negative — соседний или случайный)
+Ключевая идея: каждый триплет привязан к уровню индекса (высоте полёта).
+  - positive: патч уровня (patch_size → resize в 512) — то, что лежит в индексе
+  - anchor:   тот же участок + аугментации (поворот, перспектива, сезоность, шум)
+              — то, что видит камера
+  - negative: патч другого участка того же уровня
 
-Ключевое отличие от старой версии:
-  Масштаб моделируется ЧЕРЕЗ КАРТУ — читается патч size×scale пикселей
-  из GeoTIFF и ресемплинг в tile_size. Это честная имитация кадра камеры
-  с высоты: больше земли видно → больше патч → меньше масштаб объектов.
-  Старая версия ресайзила сам тайл (зум), что не моделировало высоту.
+Масштаб (высота) заложен в размере патча уровня, а не в аугментации.
+Модель учится: «кадр камеры с высоты h ≈ патч уровня h + искажения».
+
+Уровни (из multi_level_index.py):
+  L0: патч 512×512   (h≈0-550 м,   scale=1.0)
+  L1: патч 1024×1024 (h≈550-950 м, scale=2.0)
+  L2: патч 1792×1792 (h≈950-1500 м, scale=3.5)
 
 Использование:
   from siamese_triplet_dataset import TripletDataset
@@ -30,39 +34,55 @@ import rasterio
 from rasterio.windows import Window
 from PIL import Image
 import random
+import math
 
 Image.MAX_IMAGE_PIXELS = None
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from augmentations import apply_camera_conditions
+from augmentations import apply_camera_conditions, CURRICULUM_LEVELS
+
+
+# Уровни индекса (синхронизированы с multi_level_index.py)
+LEVELS = [
+    {'patch_size': 512,   'alt_min': 0,   'alt_max': 550},
+    {'patch_size': 1024,  'alt_min': 550, 'alt_max': 950},
+    {'patch_size': 1792,  'alt_min': 950, 'alt_max': 1500},
+]
+
+TILE_SIZE = 512
 
 
 class TripletDataset(Dataset):
     """
-    Он-лет датасет для triplet-обучения.
+    Он-лет датасет для triplet-обучения по правилу многоуровневых индексов.
 
     Для каждого элемента:
-      1. Берём тайл (positive) — 512×512 из карты
-      2. Читаем патч из карты с масштабом (anchor) — честная имитация высоты
-      3. Применяем аугментации к anchor (поворот, перспектива, погода, шум)
-      4. Берём другой тайл → negative
+      1. Случайно выбираем уровень индекса (высоту)
+      2. positive: патч уровня из карты → resize в 512 (эталон индекса)
+      3. anchor: тот же центр, патч уровня → resize в 512 + аугментации (кадр камеры)
+      4. negative: патч уровня из другого участка → resize в 512
     """
 
     def __init__(self, map_path: str, coords_path: str,
                  tile_size: int = 512, hard_neg_prob: float = 0.5,
-                 aug_level: int = 0):
+                 aug_level: int = 0,
+                 level_weights: tuple = (0.4, 0.35, 0.25)):
         """
         Args:
             map_path: путь к GeoTIFF карте
             coords_path: путь к файлу с координатами тайлов (.npy)
-            tile_size: размер тайла (512)
+            tile_size: размер тайла/выхода (512)
             hard_neg_prob: вероятность выбора negative из соседних тайлов
-            aug_level: curriculum-этап (0=масштаб, 1=+поворот, 2=полный)
+            aug_level: curriculum-этап (0=фотометрия, 1=+геометрия, 2=полный)
+            level_weights: вероятности выбора каждого уровня индекса
+                           (L0, L1, L2). По умолчанию больше данных для низких
+                           высот, где тайлов больше.
         """
         self.map_path = map_path
         self.tile_size = tile_size
         self.hard_neg_prob = hard_neg_prob
         self.aug_level = aug_level
+        self.level_weights = level_weights
 
         print(f"[TripletDataset] Открываем карту: {map_path}")
         with rasterio.open(map_path) as src:
@@ -75,6 +95,11 @@ class TripletDataset(Dataset):
         self.coords = np.load(coords_path)
         self.num_tiles = len(self.coords)
         print(f"[TripletDataset] Тайлов: {self.num_tiles}")
+        print(f"[TripletDataset] Уровней индекса: {len(LEVELS)}")
+        for i, lvl in enumerate(LEVELS):
+            print(f"  L{i}: патч {lvl['patch_size']}×{lvl['patch_size']} "
+                  f"(h={lvl['alt_min']}-{lvl['alt_max']} м), "
+                  f"вероятность={level_weights[i]}")
 
     def __len__(self):
         return self.num_tiles
@@ -84,32 +109,14 @@ class TripletDataset(Dataset):
         if self._src is None:
             self._src = rasterio.open(self.map_path)
 
-    def _read_tile(self, x, y):
-        """Читает тайл tile_size×tile_size из GeoTIFF. (x, y) — верхний левый угол."""
-        win = Window(int(x), int(y), self.tile_size, self.tile_size)
-        data = self._src.read(window=win)
-        arr = np.transpose(data, (1, 2, 0))
-        if arr.shape[2] == 4:
-            arr = arr[:, :, :3]
-        h, w = arr.shape[:2]
-        if h < self.tile_size or w < self.tile_size:
-            padded = np.zeros((self.tile_size, self.tile_size, 3), dtype=np.uint8)
-            padded[:h, :w] = arr
-            arr = padded
-        return arr
-
-    def _read_scaled_patch(self, x, y, scale):
+    def _read_patch(self, cx, cy, patch_size):
         """
-        Читает патч из карты с масштабом scale относительно тайла.
-        Имитирует кадр камеры с высоты: scale=2.0 → виден участок 2× больше.
-
-        Читает patch_size = tile_size * scale пикселей из карты,
-        ресемплинг в tile_size. (x, y) — центр патча.
+        Читает патч patch_size×patch_size из GeoTIFF с центром (cx, cy),
+        ресемплинг в tile_size (512).
         """
         ts = self.tile_size
-        patch_size = int(ts * scale)
-        x1 = int(x - patch_size / 2)
-        y1 = int(y - patch_size / 2)
+        x1 = int(cx - patch_size / 2)
+        y1 = int(cy - patch_size / 2)
 
         win = Window(x1, y1, patch_size, patch_size)
         try:
@@ -126,10 +133,13 @@ class TripletDataset(Dataset):
             padded[:h, :w] = arr
             arr = padded
 
-        # Ресемплинг к tile_size (как камера: 4K → сеть 512)
         img = Image.fromarray(arr)
         img = img.resize((ts, ts), Image.BILINEAR)
         return np.array(img)
+
+    def _choose_level(self):
+        """Случайный выбор уровня индекса по весам."""
+        return random.choices(range(len(LEVELS)), weights=self.level_weights)[0]
 
     def _normalize(self, arr):
         """Нормализация ImageNet."""
@@ -142,29 +152,23 @@ class TripletDataset(Dataset):
     def __getitem__(self, idx):
         self._ensure_src()
 
-        # Positive: тайл карты без аугментаций
+        # Выбор уровня индекса (высоты)
+        lvl_idx = self._choose_level()
+        patch_size = LEVELS[lvl_idx]['patch_size']
+
+        # Positive: патч уровня из карты → resize в 512 (эталон индекса)
         px, py = self.coords[idx]
-        pos_tile = self._read_tile(px, py)
+        cx = px + TILE_SIZE / 2
+        cy = py + TILE_SIZE / 2
+        pos_tile = self._read_patch(cx, cy, patch_size)
 
-        # Anchor: кадр камеры — патч из карты с масштабом + аугментации
-        # Масштаб моделируется через карту (честная имитация высоты)
-        from augmentations import CURRICULUM_LEVELS
-        cfg = CURRICULUM_LEVELS.get(self.aug_level, CURRICULUM_LEVELS[2])
-        scale = random.uniform(cfg['scale_range'][0], cfg['scale_range'][1])
+        # Anchor: тот же центр, патч уровня → resize в 512 + аугментации
+        # (имитация кадра камеры с высоты данного уровня)
+        anchor_tile = self._read_patch(cx, cy, patch_size)
+        anchor_img = Image.fromarray(anchor_tile)
+        anchor_tile = np.array(apply_camera_conditions(anchor_img, level=self.aug_level))
 
-        # Центр тайла на карте
-        cx = px + self.tile_size / 2
-        cy = py + self.tile_size / 2
-
-        # Читаем патч с масштабом (кадр камеры)
-        anchor_tile = self._read_scaled_patch(cx, cy, scale)
-
-        # Применяем остальные аугментации (поворот, перспектива, погода, шум)
-        # apply_camera_conditions с level, но БЕЗ масштаба (уже сделан через карту)
-        img = Image.fromarray(anchor_tile)
-        anchor_tile = np.array(apply_camera_conditions(img, level=self.aug_level, skip_scale=True))
-
-        # Negative: другой тайл
+        # Negative: патч уровня из другого участка
         if random.random() < self.hard_neg_prob:
             offset = random.choice([1, 2, 3, -1, -2, -3])
             neg_idx = (idx + offset) % self.num_tiles
@@ -174,12 +178,15 @@ class TripletDataset(Dataset):
                 neg_idx = random.randint(0, self.num_tiles - 1)
 
         nx, ny = self.coords[neg_idx]
-        neg_tile = self._read_tile(nx, ny)
+        ncx = nx + TILE_SIZE / 2
+        ncy = ny + TILE_SIZE / 2
+        neg_tile = self._read_patch(ncx, ncy, patch_size)
 
         return {
             'anchor': self._normalize(anchor_tile),
             'positive': self._normalize(pos_tile),
             'negative': self._normalize(neg_tile),
+            'level': lvl_idx,
         }
 
     def close(self):

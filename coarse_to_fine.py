@@ -310,13 +310,13 @@ def test_coarse_to_fine():
     print("=" * 60)
 
     navigator = CoarseToFineNavigator(
-        fine_model_path='/home/alex/aerial-nav/siamese_model_kalanchak_v2.pth'
+        fine_model_path=os.path.join(os.path.dirname(os.path.abspath(__file__)), 'siamese_model_kalanchak_v2.pth')
     )
 
     # Загружаем карты
     navigator.load_maps(
-        coarse_map_path='/home/alex/aerial-nav/map_cache/coarse_46.2650_33.3732_z16.png',
-        fine_map_path='/home/alex/aerial-nav/map_cache/highres/highres_46.2650_33.3732_z18.png'
+        coarse_map_path=os.path.join(os.path.dirname(os.path.abspath(__file__)), 'map_cache/coarse_46.2650_33.3732_z16.png'),
+        fine_map_path=os.path.join(os.path.dirname(os.path.abspath(__file__)), 'map_cache/highres/highres_46.2650_33.3732_z18.png')
     )
 
     # Тест: для каждого fine-тайла находим match

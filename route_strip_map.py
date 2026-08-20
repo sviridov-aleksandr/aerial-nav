@@ -363,7 +363,11 @@ class RouteStripMapDownloader:
         return img, px_w, px_h
 
     def download_all(self, output_path,
-                     cache_base='/home/alex/aerial-nav/map_cache/strips'):
+                     cache_base=None):
+        """Скачивает все участки и склеивает в одну ленту."""
+        if cache_base is None:
+            cache_base = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                      'map_cache/strips')
         """Скачивает все участки и склеивает в одну ленту."""
         print(f"\n{'='*70}")
         print(f"СКАЧИВАНИЕ КАРТЫ ВДОЛЬ МАРШРУТА")

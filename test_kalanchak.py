@@ -8,7 +8,7 @@
 """
 
 import sys
-sys.path.insert(0, '/home/alex/aerial-nav')
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import torch
 import torch.nn.functional as F
@@ -25,8 +25,8 @@ DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 print(f"[Device] {DEVICE}")
 
 # ===================== CONFIG =====================
-MODEL_PATH = '/home/alex/aerial-nav/siamese_model_kalanchak.pth'
-MAP_PATH = '/home/alex/aerial-nav/map_cache/highres/highres_46.2650_33.3732_z18.png'
+MODEL_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'siamese_model_kalanchak.pth')
+MAP_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'map_cache/highres/highres_46.2650_33.3732_z18.png')
 TILE_SIZE = 224
 MAP_RESOLUTION = 0.5  # м/пиксель
 

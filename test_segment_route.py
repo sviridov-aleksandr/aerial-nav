@@ -6,7 +6,7 @@
 
 import sys
 import os
-sys.path.insert(0, '/home/alex/aerial-nav')
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from route_segment_navigator import RouteSegmentNavigator, split_route_into_segments, haversine
 

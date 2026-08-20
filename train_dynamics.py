@@ -11,18 +11,18 @@ train_dynamics.py — дообучение сиамской сети на дин
   - Модель должна давать близкие эмбеддинги для перекрывающихся кадров
   - Это основа для одометрии и фильтра Калмана
 
-Триплеты:
-  - anchor:   кадр в позиции P (патч из карты с масштабом + аугментации)
-  - positive: кадр в позиции P+Δ (смещение 0-33 м, тот же масштаб)
-  - negative: другой участок карты (чистый тайл)
+Триплеты (по правилу многоуровневых индексов):
+  - anchor:   кадр в позиции P (патч уровня + аугментации)
+  - positive: кадр в позиции P+Δ (смещение 0-33 м, тот же уровень)
+  - negative: патч другого участка того же уровня
 
 Смещение Δ:
   - Диапазон 0-33 м (покрывает 1-5 Гц при V_max=120 км/ч)
   - Направление случайное (равномерное по окружности)
   - В пикселях: 0-160 px при 0.206 м/px
 
-Масштаб пары одинаковый (один полёт, одна высота) — модель учит именно
-смещение, а не изменение высоты.
+Уровень индекса (высота) одинаковый для пары anchor-positive — модель
+учит именно смещение, а не изменение высоты.
 
 Использование:
   python3 train_dynamics.py
@@ -45,28 +45,39 @@ import time
 
 Image.MAX_IMAGE_PIXELS = None
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, PROJECT_DIR)
 
 from siamese_network import AerialFeatureExtractor, TripletLoss
 from augmentations import apply_camera_conditions, CURRICULUM_LEVELS
 
 multiprocessing.set_start_method('fork', force=True)
 
+# Уровни индекса (синхронизированы с multi_level_index.py)
+LEVELS = [
+    {'patch_size': 512,   'alt_min': 0,   'alt_max': 550},
+    {'patch_size': 1024,  'alt_min': 550, 'alt_max': 950},
+    {'patch_size': 1792,  'alt_min': 950, 'alt_max': 1500},
+]
+
+TILE_SIZE = 512
+RESOLUTION = 0.206  # м/px
+
 
 class DynamicsDataset(Dataset):
     """
-    Датасет для обучения на динамике полёта.
+    Датасет для обучения на динамике полёта по правилу многоуровневых индексов.
 
     Генерирует триплеты (anchor, positive, negative):
-      - anchor:   кадр в позиции P (масштаб + аугментации)
-      - positive: кадр в позиции P+Δ (смещение 0-max_shift_px, тот же масштаб)
-      - negative: чистый тайл другого участка
+      - anchor:   кадр в позиции P (патч уровня + аугментации)
+      - positive: кадр в позиции P+Δ (смещение 0-max_shift_px, тот же уровень)
+      - negative: патч другого участка того же уровня
     """
 
     def __init__(self, map_path: str, coords_path: str,
                  tile_size: int = 512, hard_neg_prob: float = 0.5,
-                 max_shift_px: int = 160, scale_range=(0.25, 2.0),
-                 aug_level: int = 2):
+                 max_shift_px: int = 160, aug_level: int = 2,
+                 level_weights: tuple = (0.4, 0.35, 0.25)):
         """
         Args:
             map_path: путь к GeoTIFF карте
@@ -75,15 +86,15 @@ class DynamicsDataset(Dataset):
             hard_neg_prob: вероятность выбора negative из соседних тайлов
             max_shift_px: максимальное смещение кадра (px карты)
                           (160 px = 33 м при 0.206 м/px)
-            scale_range: диапазон масштаба (высота полёта)
             aug_level: curriculum-этап аугментаций (0-2)
+            level_weights: вероятности выбора каждого уровня индекса
         """
         self.map_path = map_path
         self.tile_size = tile_size
         self.hard_neg_prob = hard_neg_prob
         self.max_shift_px = max_shift_px
-        self.scale_range = scale_range
         self.aug_level = aug_level
+        self.level_weights = level_weights
 
         print(f"[DynamicsDataset] Открываем карту: {map_path}")
         with rasterio.open(map_path) as src:
@@ -106,10 +117,9 @@ class DynamicsDataset(Dataset):
         if self._src is None:
             self._src = rasterio.open(self.map_path)
 
-    def _read_scaled_patch(self, cx, cy, scale):
-        """Читает патч scale×tile_size из карты с центром (cx, cy), ресемплинг в tile_size."""
+    def _read_patch(self, cx, cy, patch_size):
+        """Читает патч patch_size×patch_size из карты с центром (cx, cy), ресемплинг в tile_size."""
         ts = self.tile_size
-        patch_size = int(ts * scale)
         x1 = int(cx - patch_size / 2)
         y1 = int(cy - patch_size / 2)
 
@@ -132,19 +142,9 @@ class DynamicsDataset(Dataset):
         img = img.resize((ts, ts), Image.BILINEAR)
         return np.array(img)
 
-    def _read_tile(self, x, y):
-        """Читает тайл tile_size×tile_size из карты (верхний левый угол)."""
-        win = Window(int(x), int(y), self.tile_size, self.tile_size)
-        data = self._src.read(window=win)
-        arr = np.transpose(data, (1, 2, 0))
-        if arr.shape[2] == 4:
-            arr = arr[:, :, :3]
-        h, w = arr.shape[:2]
-        if h < self.tile_size or w < self.tile_size:
-            padded = np.zeros((self.tile_size, self.tile_size, 3), dtype=np.uint8)
-            padded[:h, :w] = arr
-            arr = padded
-        return arr
+    def _choose_level(self):
+        """Случайный выбор уровня индекса по весам."""
+        return random.choices(range(len(LEVELS)), weights=self.level_weights)[0]
 
     def _normalize(self, arr):
         mean = np.array([0.485, 0.456, 0.406], dtype=np.float32)
@@ -160,16 +160,16 @@ class DynamicsDataset(Dataset):
         px, py = self.coords[idx]
         cx, cy = px + self.tile_size / 2, py + self.tile_size / 2
 
-        # Общий масштаб для пары (один полёт, одна высота)
-        scale = random.uniform(*self.scale_range)
+        # Выбор уровня индекса (высоты) — общий для пары
+        lvl_idx = self._choose_level()
+        patch_size = LEVELS[lvl_idx]['patch_size']
 
-        # Anchor: кадр в позиции P
-        anchor_tile = self._read_scaled_patch(cx, cy, scale)
+        # Anchor: кадр в позиции P (патч уровня + аугментации)
+        anchor_tile = self._read_patch(cx, cy, patch_size)
         anchor_img = Image.fromarray(anchor_tile)
-        anchor_tile = np.array(apply_camera_conditions(anchor_img, level=self.aug_level, skip_scale=True))
+        anchor_tile = np.array(apply_camera_conditions(anchor_img, level=self.aug_level))
 
-        # Positive: кадр в позиции P+Δ (смещение)
-        # Случайное направление и длина смещения
+        # Positive: кадр в позиции P+Δ (смещение, тот же уровень)
         shift = random.uniform(0, self.max_shift_px)
         angle = random.uniform(0, 2 * math.pi)
         dx = shift * math.cos(angle)
@@ -177,12 +177,11 @@ class DynamicsDataset(Dataset):
         p_cx = cx + dx
         p_cy = cy + dy
 
-        # Проверка границ: если выходит за пределы — уменьшаем до допустимого
-        half = int(self.tile_size * scale / 2)
-        margin = 32  # запас от края карты
+        # Проверка границ
+        half = patch_size // 2
+        margin = 32
         if p_cx - half < margin or p_cx + half > self.width - margin or \
            p_cy - half < margin or p_cy + half > self.height - margin:
-            # Сдвигаем к центру: сокращаем смещение
             max_dx = min(self.width - margin - half - cx, cx - margin - half)
             max_dy = min(self.height - margin - half - cy, cy - margin - half)
             scale_dx = min(1.0, max_dx / max(1, abs(dx))) if abs(dx) > 0 else 1.0
@@ -191,11 +190,11 @@ class DynamicsDataset(Dataset):
             p_cx = cx + dx * k
             p_cy = cy + dy * k
 
-        pos_tile = self._read_scaled_patch(p_cx, p_cy, scale)
+        pos_tile = self._read_patch(p_cx, p_cy, patch_size)
         pos_img = Image.fromarray(pos_tile)
-        pos_tile = np.array(apply_camera_conditions(pos_img, level=self.aug_level, skip_scale=True))
+        pos_tile = np.array(apply_camera_conditions(pos_img, level=self.aug_level))
 
-        # Negative: другой тайл (чистый)
+        # Negative: патч другого участка того же уровня
         if random.random() < self.hard_neg_prob:
             offset = random.choice([1, 2, 3, -1, -2, -3])
             neg_idx = (idx + offset) % self.num_tiles
@@ -205,12 +204,15 @@ class DynamicsDataset(Dataset):
                 neg_idx = random.randint(0, self.num_tiles - 1)
 
         nx, ny = self.coords[neg_idx]
-        neg_tile = self._read_tile(nx, ny)
+        ncx = nx + self.tile_size / 2
+        ncy = ny + self.tile_size / 2
+        neg_tile = self._read_patch(ncx, ncy, patch_size)
 
         return {
             'anchor': self._normalize(anchor_tile),
             'positive': self._normalize(pos_tile),
             'negative': self._normalize(neg_tile),
+            'level': lvl_idx,
         }
 
     def close(self):
@@ -219,11 +221,11 @@ class DynamicsDataset(Dataset):
 
 
 def main():
-    # Параметры
-    MAP_PATH = '/home/alex/aerial-nav/map_cache/region_google.tif'
-    COORDS_PATH = '/home/alex/aerial-nav/training_data/region_dataset/positive_coords.npy'
-    INIT_MODEL = 'region_model.pth'
-    OUTPUT_PATH = 'dynamics_model.pth'
+    # Параметры (относительные пути)
+    MAP_PATH = os.path.join(PROJECT_DIR, 'map_cache/region_google.tif')
+    COORDS_PATH = os.path.join(PROJECT_DIR, 'training_data/region_dataset/positive_coords.npy')
+    INIT_MODEL = os.path.join(PROJECT_DIR, 'region_model.pth')
+    OUTPUT_PATH = os.path.join(PROJECT_DIR, 'dynamics_model.pth')
     EPOCHS = 5
     BATCH_SIZE = 32
     LR = 1e-4
@@ -232,7 +234,6 @@ def main():
 
     # Смещение: 0-33 м при 0.206 м/px (покрывает 1-5 Гц при V_max=120 км/ч)
     MAX_SHIFT_PX = 160  # 33 м
-    SCALE_RANGE = (0.25, 2.0)
 
     print(f"[Train] Device: {DEVICE}")
     print(f"[Train] Batch size: {BATCH_SIZE}")
@@ -240,7 +241,8 @@ def main():
     print(f"[Train] Loss: TripletLoss (margin=1.0)")
     print(f"[Train] LR: {LR} (fine-tune)")
     print(f"[Train] Смещение кадра: 0-{MAX_SHIFT_PX} px "
-          f"({MAX_SHIFT_PX*0.206:.1f} м), масштаб {SCALE_RANGE}")
+          f"({MAX_SHIFT_PX*0.206:.1f} м)")
+    print(f"[Train] Многоуровневый индекс: L0(512), L1(1024), L2(1792)")
 
     # Модель
     print(f"[Train] Создание модели (ResNet-18, ImageNet pretrained)")
@@ -273,7 +275,6 @@ def main():
         tile_size=512,
         hard_neg_prob=0.5,
         max_shift_px=MAX_SHIFT_PX,
-        scale_range=SCALE_RANGE,
         aug_level=2,  # полный набор аугментаций
     )
     loader = DataLoader(

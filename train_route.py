@@ -29,13 +29,15 @@ from siamese_triplet_dataset import TripletDataset
 
 multiprocessing.set_start_method('fork', force=True)
 
+PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
+
 
 def main():
-    # Параметры
-    MAP_PATH = '/home/alex/aerial-nav/map_cache/antiuav_route_strip.tif'
-    COORDS_PATH = '/home/alex/aerial-nav/training_data/route_dataset/positive_coords.npy'
-    INIT_MODEL = 'region_model.pth'
-    OUTPUT_PATH = 'route_model.pth'
+    # Параметры (относительные пути)
+    MAP_PATH = os.path.join(PROJECT_DIR, 'map_cache/antiuav_route_strip.tif')
+    COORDS_PATH = os.path.join(PROJECT_DIR, 'training_data/route_dataset/positive_coords.npy')
+    INIT_MODEL = os.path.join(PROJECT_DIR, 'region_model.pth')
+    OUTPUT_PATH = os.path.join(PROJECT_DIR, 'route_model.pth')
     EPOCHS = 8
     BATCH_SIZE = 32
     LR = 1e-4

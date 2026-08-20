@@ -9,8 +9,8 @@ import os
 
 Image.MAX_IMAGE_PIXELS = None
 
-MAP_PATH = '/home/alex/aerial-nav/map_cache/highres/highres_46.2650_33.3732_z18.png'
-OUTPUT_PATH = '/home/alex/aerial-nav/map_cache/coarse8_46.2650_33.3732_z14.png'
+MAP_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'map_cache/highres/highres_46.2650_33.3732_z18.png')
+OUTPUT_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'map_cache/coarse8_46.2650_33.3732_z14.png')
 
 HIGHRES_RESOLUTION = 0.5  # м/пиксель
 COARSE_RESOLUTION = 8.0   # м/пиксель

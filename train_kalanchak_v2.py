@@ -14,7 +14,7 @@
 import sys
 import os
 import argparse
-sys.path.insert(0, '/home/alex/aerial-nav')
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import torch
 import torch.nn as nn
@@ -26,7 +26,7 @@ from PIL import Image
 Image.MAX_IMAGE_PIXELS = None
 
 # Логирование в файл
-LOG_PATH = '/home/alex/aerial-nav/train_v2.log'
+LOG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'train_v2.log')
 log_file = open(LOG_PATH, 'a')
 
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -215,7 +215,7 @@ def train(resume_from_best=False, resume_from_last=False, start_epoch_override=N
     print("LOADING MAPS")
     print("=" * 60)
 
-    map_dir = '/home/alex/aerial-nav/map_cache/highres'
+    map_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'map_cache/highres')
     map_paths = [
         os.path.join(map_dir, 'highres_46.2650_33.3732_z18.png'),
     ]
@@ -242,7 +242,7 @@ def train(resume_from_best=False, resume_from_last=False, start_epoch_override=N
     print("LOADING PRETRAINED MODEL")
     print("=" * 60)
 
-    pretrained_path = '/home/alex/aerial-nav/siamese_model_kalanchak.pth'
+    pretrained_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'siamese_model_kalanchak.pth')
     checkpoint = torch.load(pretrained_path, map_location=DEVICE, weights_only=False)
     
     model = AerialFeatureExtractor(embedding_dim=256).to(DEVICE)
@@ -260,15 +260,15 @@ def train(resume_from_best=False, resume_from_last=False, start_epoch_override=N
 
     epochs = 40
     best_loss = float('inf')
-    output_path = '/home/alex/aerial-nav/siamese_model_kalanchak_v2.pth'
+    output_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'siamese_model_kalanchak_v2.pth')
     start_epoch = 0
 
     # === RESUME ===
-    resume_ckpt_path = '/home/alex/aerial-nav/siamese_model_kalanchak_v2.pth'
+    resume_ckpt_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'siamese_model_kalanchak_v2.pth')
     
     if resume_from_best:
         # Resume из лучшей модели (сохраняется в siamese_model_kalanchak_v2_best.pth)
-        best_path = '/home/alex/aerial-nav/siamese_model_kalanchak_v2_best.pth'
+        best_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'siamese_model_kalanchak_v2_best.pth')
         if os.path.exists(best_path):
             log(f"\n[Resume BEST] Found checkpoint: {best_path}")
             resume_ckpt = torch.load(best_path, map_location=DEVICE, weights_only=False)
@@ -383,7 +383,7 @@ def train(resume_from_best=False, resume_from_last=False, start_epoch_override=N
                 'loss': best_loss,
                 'optimizer_state_dict': optimizer.state_dict(),
                 'embedding_dim': 256,
-            }, '/home/alex/aerial-nav/siamese_model_kalanchak_v2_best.pth')
+            }, os.path.join(os.path.dirname(os.path.abspath(__file__)), 'siamese_model_kalanchak_v2_best.pth'))
             log(f"  Saved BEST (loss={best_loss:.6f})")
             
             # Также обновляем последний checkpoint

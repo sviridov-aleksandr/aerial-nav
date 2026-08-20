@@ -62,7 +62,10 @@ class TileManager:
     После обработки сегмента — освобождает память.
     """
 
-    def __init__(self, cache_dir='/home/alex/aerial-nav/map_cache/highres'):
+    def __init__(self, cache_dir=None):
+        if cache_dir is None:
+            cache_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                     'map_cache/highres')
         self.cache_dir = cache_dir
         os.makedirs(cache_dir, exist_ok=True)
         self._cache = {}  # (x, y, z) → np.ndarray
