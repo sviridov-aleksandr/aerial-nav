@@ -42,23 +42,48 @@ RESOLUTION = 0.206  # м/px
 TILE_SIZE = 512
 CAM_W = 3840
 CAM_FOV_H = 90.0
+ALT_STEP = 100       # шаг высот в метрах
+ALT_MIN = 0
+ALT_MAX = 1200
 
-# Уровни индекса: (patch_size_px, min_altitude_m, max_altitude_m)
-# Высота → масштаб: scale = (2 * alt * tan(FOV/2) / CAM_W * TILE_SIZE) / RESOLUTION / TILE_SIZE
-# Упрощённо: scale ≈ alt / 400 (при FOV 90°, CAM_W=3840, RESOLUTION=0.206)
-LEVELS = [
-    {'patch_size': 512,   'scale': 1.0, 'alt_min': 0,   'alt_max': 550},   # h=400 м
-    {'patch_size': 1024,  'scale': 2.0, 'alt_min': 550, 'alt_max': 950},   # h=800 м
-    {'patch_size': 1792,  'scale': 3.5, 'alt_min': 950, 'alt_max': 1500},  # h=1200 м
-]
+
+def altitude_to_patch_size(altitude_m: float) -> int:
+    """Размер патча карты для заданной высоты (px)."""
+    if altitude_m <= 0:
+        return 128
+    footprint_w = 2 * altitude_m * math.tan(math.radians(CAM_FOV_H / 2))
+    gsd_cam = footprint_w / CAM_W
+    patch_m = gsd_cam * TILE_SIZE
+    patch_px = int(round(patch_m / RESOLUTION))
+    patch_px = max(128, patch_px)
+    patch_px = ((patch_px + 63) // 64) * 64  # кратно 64 — чётный, без артефактов
+    return patch_px
+
+
+def _generate_levels():
+    """Генерация 13 уровней индекса (0-1200 м, шаг 100 м)."""
+    levels = []
+    for alt in range(ALT_MIN, ALT_MAX + ALT_STEP, ALT_STEP):
+        patch_size = altitude_to_patch_size(alt)
+        alt_min = max(0, alt - ALT_STEP // 2)
+        alt_max = alt + ALT_STEP // 2
+        levels.append({
+            'patch_size': patch_size,
+            'altitude': alt,
+            'alt_min': alt_min,
+            'alt_max': alt_max,
+        })
+    levels[-1]['alt_max'] = 9999  # последний уровень — до бесконечности
+    return levels
+
+
+LEVELS = _generate_levels()
 
 
 def altitude_to_level(altitude_m: float) -> int:
-    """Выбор уровня индекса по высоте полёта."""
-    for i, lvl in enumerate(LEVELS):
-        if lvl['alt_min'] <= altitude_m < lvl['alt_max']:
-            return i
-    return len(LEVELS) - 1  # последний уровень для очень больших высот
+    """Выбор уровня индекса по высоте полёта (13 уровней, шаг 100 м)."""
+    idx = round(altitude_m / ALT_STEP)
+    return max(0, min(idx, len(LEVELS) - 1))
 
 
 def normalize(arr):

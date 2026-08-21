@@ -50,15 +50,9 @@ sys.path.insert(0, PROJECT_DIR)
 
 from siamese_network import AerialFeatureExtractor, TripletLoss
 from augmentations import apply_camera_conditions, CURRICULUM_LEVELS
+from multi_level_index import LEVELS, altitude_to_level, ALT_STEP, ALT_MAX
 
 multiprocessing.set_start_method('fork', force=True)
-
-# Уровни индекса (синхронизированы с multi_level_index.py)
-LEVELS = [
-    {'patch_size': 512,   'alt_min': 0,   'alt_max': 550},
-    {'patch_size': 1024,  'alt_min': 550, 'alt_max': 950},
-    {'patch_size': 1792,  'alt_min': 950, 'alt_max': 1500},
-]
 
 TILE_SIZE = 512
 RESOLUTION = 0.206  # м/px
@@ -77,7 +71,7 @@ class DynamicsDataset(Dataset):
     def __init__(self, map_path: str, coords_path: str,
                  tile_size: int = 512, hard_neg_prob: float = 0.5,
                  max_shift_px: int = 160, aug_level: int = 2,
-                 level_weights: tuple = (0.4, 0.35, 0.25)):
+                 level_weights: tuple = None):
         """
         Args:
             map_path: путь к GeoTIFF карте
@@ -87,13 +81,16 @@ class DynamicsDataset(Dataset):
             max_shift_px: максимальное смещение кадра (px карты)
                           (160 px = 33 м при 0.206 м/px)
             aug_level: curriculum-этап аугментаций (0-2)
-            level_weights: вероятности выбора каждого уровня индекса
+            level_weights: вероятности выбора каждого уровня индекса.
+                           По умолчанию — равномерно по всем уровням.
         """
         self.map_path = map_path
         self.tile_size = tile_size
         self.hard_neg_prob = hard_neg_prob
         self.max_shift_px = max_shift_px
         self.aug_level = aug_level
+        if level_weights is None:
+            level_weights = tuple(1.0 / len(LEVELS) for _ in LEVELS)
         self.level_weights = level_weights
 
         print(f"[DynamicsDataset] Открываем карту: {map_path}")

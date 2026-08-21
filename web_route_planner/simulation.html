@@ -93,6 +93,7 @@
         <button class="btn btn-success btn-sim" id="startBtn">▶️ Старт</button>
         <button class="btn btn-warning btn-sim" id="pauseBtn" style="display:none;">⏸️ Пауза</button>
         <button class="btn btn-danger btn-sim" id="resetBtn">⏹️ Сброс</button>
+        <button class="btn btn-info btn-sim" id="liveBtn">📡 Live (FC)</button>
 
         <!-- Скорость -->
         <div class="section-title">Скорость симуляции</div>
@@ -377,6 +378,84 @@ function startPolling() {
     }, 200);
 }
 
+let liveMode = false;
+
+function startLivePolling() {
+    if (pollTimer) clearInterval(pollTimer);
+    liveMode = true;
+    document.getElementById('startBtn').style.display = 'none';
+    document.getElementById('pauseBtn').style.display = 'none';
+    document.getElementById('liveBtn').textContent = '📡 Live (вкл)';
+    document.getElementById('liveBtn').classList.replace('btn-info', 'btn-success');
+
+    pollTimer = setInterval(async () => {
+        try {
+            const resp = await fetch('/api/vision/state');
+            const v = await resp.json();
+            if (v.lat === 0 && v.lon === 0) return;
+
+            // Телеметрия
+            document.getElementById('telAlt').textContent = `${v.alt.toFixed(0)} м`;
+            document.getElementById('telSpeed').textContent = `22.0 м/с`;
+            document.getElementById('telHeading').textContent = `${v.heading.toFixed(1)}°`;
+            document.getElementById('telBank').textContent = `0.0°`;
+
+            // Waypoint
+            document.getElementById('telWP').textContent = `${v.point} / ${v.total}`;
+            document.getElementById('telDistWP').textContent = `— м`;
+
+            // Прогресс
+            const pct = v.total > 0 ? (v.point / v.total * 100) : 0;
+            document.getElementById('progressFill').style.width = pct + '%';
+            document.getElementById('progressText').textContent = pct.toFixed(1) + '%';
+
+            // Footprint
+            const footprint = 2 * v.alt * Math.tan(Math.PI / 4);
+            document.getElementById('telFootprint').textContent = `${footprint.toFixed(0)} м`;
+
+            // Статус
+            const badge = document.getElementById('statusBadge');
+            badge.className = 'status-badge status-running';
+            badge.textContent = 'Live (FC)';
+
+            // Дрон на карте
+            if (droneMarker) droneLayer.removeLayer(droneMarker);
+            droneMarker = L.marker([v.lat, v.lon], { icon: droneIcon })
+                .addTo(droneLayer);
+            const droneEl = droneMarker.getElement();
+            if (droneEl) {
+                const svg = droneEl.querySelector('svg');
+                if (svg) svg.style.transform = `rotate(${v.heading}deg)`;
+            }
+
+            // Трек
+            trailLayer.clearLayers();
+            if (v.trail && v.trail.length > 1) {
+                L.polyline(v.trail, { color: '#4ecca3', weight: 2, opacity: 0.5 }).addTo(trailLayer);
+            }
+
+            // Overlay
+            const overlay = document.getElementById('droneOverlay');
+            overlay.innerHTML = `<span style="color:#4ecca3;">●</span> ` +
+                `Live: H=${v.alt.toFixed(0)}м Курс=${v.heading.toFixed(0)}° ` +
+                `Точка ${v.point}/${v.total} | Err=${v.err_m.toFixed(0)}м ` +
+                `Conf=${v.conf.toFixed(2)} Acc=${v.acc.toFixed(0)}% Vision=${v.vision_count}`;
+
+            // Центрирование
+            map.panTo([v.lat, v.lon], { animate: true, duration: 0.5 });
+        } catch (e) {}
+    }, 200);
+}
+
+function stopLivePolling() {
+    liveMode = false;
+    if (pollTimer) clearInterval(pollTimer);
+    pollTimer = null;
+    document.getElementById('liveBtn').textContent = '📡 Live (FC)';
+    document.getElementById('liveBtn').classList.replace('btn-success', 'btn-info');
+    document.getElementById('startBtn').style.display = 'block';
+}
+
 // ------------------------------------------------------------
 // Управление
 // ------------------------------------------------------------
@@ -427,6 +506,9 @@ window.addEventListener('DOMContentLoaded', async () => {
     document.getElementById('startBtn').onclick = startSim;
     document.getElementById('pauseBtn').onclick = pauseSim;
     document.getElementById('resetBtn').onclick = resetSim;
+    document.getElementById('liveBtn').onclick = () => {
+        if (liveMode) stopLivePolling(); else startLivePolling();
+    };
 
     document.querySelectorAll('.speed-btn').forEach(el => {
         el.onclick = () => setSpeed(parseFloat(el.dataset.speed));

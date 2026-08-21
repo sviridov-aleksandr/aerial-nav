@@ -34,6 +34,7 @@ sys.path.insert(0, PROJECT_DIR)
 
 from siamese_network import AerialFeatureExtractor
 from augmentations import apply_seasonal
+from multi_level_index import LEVELS, altitude_to_level
 
 DEVICE = torch.device('cpu')
 
@@ -50,13 +51,6 @@ NUM_TEST_TILES = 20
 CAM_W = 3840
 CAM_FOV_H = 90.0
 
-# Уровни индекса (синхронизированы с multi_level_index.py)
-LEVELS = [
-    {'patch_size': 512,   'alt_min': 0,   'alt_max': 550},
-    {'patch_size': 1024,  'alt_min': 550, 'alt_max': 950},
-    {'patch_size': 1792,  'alt_min': 950, 'alt_max': 1500},
-]
-
 # Высоты для эксперимента 1
 ALTITUDES = [100, 200, 300, 400, 450, 700, 800, 1000, 1200]
 
@@ -64,14 +58,16 @@ ALTITUDES = [100, 200, 300, 400, 450, 700, 800, 1000, 1200]
 ANGLES = [0, 5, 10, 15, 20, 30, 45, 90, 180]
 
 
-def load_model():
+def load_model(model_path=None):
+    path = model_path or MODEL_PATH
     model = AerialFeatureExtractor(embedding_dim=256).to(DEVICE)
-    ckpt = torch.load(MODEL_PATH, map_location=DEVICE, weights_only=False)
+    ckpt = torch.load(path, map_location=DEVICE, weights_only=False)
     if isinstance(ckpt, dict) and 'model_state_dict' in ckpt:
         model.load_state_dict(ckpt['model_state_dict'])
     else:
         model.load_state_dict(ckpt)
     model.eval()
+    print(f"[Test] Модель загружена: {path}")
     return model
 
 
@@ -83,12 +79,10 @@ def normalize(arr):
     return out
 
 
-def altitude_to_level(altitude_m):
-    """Выбор уровня индекса по высоте."""
-    for i, lvl in enumerate(LEVELS):
-        if lvl['alt_min'] <= altitude_m < lvl['alt_max']:
-            return i
-    return len(LEVELS) - 1
+def altitude_to_level(altitude_m: float) -> int:
+    """Выбор уровня по высоте (используется внешняя из multi_level_index, но дублируем для совместимости)."""
+    from multi_level_index import altitude_to_level as _atl
+    return _atl(altitude_m)
 
 
 def read_patch(src, cx, cy, patch_size, tile_size=512):
@@ -220,11 +214,25 @@ def build_multi_level_index(model, src, coords_subset):
 
 
 def main():
+    import argparse
+    parser = argparse.ArgumentParser(description="Моделирование полёта (многоуровневый индекс)")
+    parser.add_argument('--model', type=str, default=None,
+                        help='Путь к модели (по умолчанию region_model.pth)')
+    parser.add_argument('--index-size', type=int, default=400,
+                        help='Размер индекса (тайлов)')
+    parser.add_argument('--num-test', type=int, default=20,
+                        help='Число тестовых тайлов')
+    args = parser.parse_args()
+
+    global INDEX_SIZE, NUM_TEST_TILES
+    INDEX_SIZE = args.index_size
+    NUM_TEST_TILES = args.num_test
+
     print("=" * 70)
     print("МОДЕЛИРОВАНИЕ ПОЛЁТА: многоуровневый индекс")
     print("=" * 70)
 
-    model = load_model()
+    model = load_model(args.model)
     src = rasterio.open(MAP_PATH)
     coords = np.load(COORDS_PATH)
     print(f"[Sim] Тайлов в датасете: {len(coords)}")
@@ -316,16 +324,24 @@ def main():
     print(f"ЭКСПЕРИМЕНТ 2: ВРАЩЕНИЕ (рыскание)")
     print(f"  Высота: {best_alt}м (оптимальная из эксперимента 1)")
     print(f"  Углы: {ANGLES}°")
+    print(f"  Режим: без компенсации | с yaw-компенсацией (как mavlink_bridge)")
     print(f"{'='*70}")
 
     best_lvl = altitude_to_level(best_alt)
     index_embs, locs = index_data[best_lvl]
 
     for angle in ANGLES:
-        correct = 0
-        d_true_list = []
-        d_other_list = []
-        errs = []
+        # --- Без компенсации ---
+        correct_raw = 0
+        d_true_raw = []
+        d_other_raw = []
+        errs_raw = []
+
+        # --- С yaw-компенсацией ---
+        correct_comp = 0
+        d_true_comp = []
+        d_other_comp = []
+        errs_comp = []
 
         for ti in test_indices:
             if ti >= len(locs):
@@ -337,33 +353,47 @@ def main():
             if frame.max() == 0:
                 continue
 
+            # Без компенсации: кадр повёрнут на angle, ищем в обычном индексе
             frame_rot = rotate_frame(frame, angle)
             eq = emb_batch(model, [frame_rot])[0]
             d = torch.cdist(eq.unsqueeze(0), index_embs).squeeze(0)
             nearest = d.argmin().item()
-
             if nearest == ti:
-                correct += 1
-
-            d_true_list.append(d[ti].item())
+                correct_raw += 1
+            d_true_raw.append(d[ti].item())
             mask = np.ones(len(index_embs), dtype=bool)
             mask[ti] = False
-            d_other_list.append(d[mask].min().item())
-
+            d_other_raw.append(d[mask].min().item())
             px, py = locs[nearest]
-            err = math.sqrt((px - x) ** 2 + (py - y) ** 2) * RESOLUTION
-            errs.append(err)
+            errs_raw.append(math.sqrt((px - x)**2 + (py - y)**2) * RESOLUTION)
 
-        n = len(d_true_list)
-        recall = correct / n * 100 if n > 0 else 0
-        med_err = float(np.median(errs)) if errs else float('nan')
+            # С yaw-компенсацией: поворачиваем на -angle (обратный разворот)
+            frame_comp = rotate_frame(frame_rot, -angle)
+            eq_c = emb_batch(model, [frame_comp])[0]
+            d_c = torch.cdist(eq_c.unsqueeze(0), index_embs).squeeze(0)
+            nearest_c = d_c.argmin().item()
+            if nearest_c == ti:
+                correct_comp += 1
+            d_true_comp.append(d_c[ti].item())
+            mask_c = np.ones(len(index_embs), dtype=bool)
+            mask_c[ti] = False
+            d_other_comp.append(d_c[mask_c].min().item())
+            px_c, py_c = locs[nearest_c]
+            errs_comp.append(math.sqrt((px_c - x)**2 + (py_c - y)**2) * RESOLUTION)
+
+        n = len(d_true_raw)
+        recall_raw = correct_raw / n * 100 if n > 0 else 0
+        recall_comp = correct_comp / n * 100 if n > 0 else 0
+        med_raw = float(np.median(errs_raw)) if errs_raw else float('nan')
+        med_comp = float(np.median(errs_comp)) if errs_comp else float('nan')
 
         print(f"\n  угол={angle:3d}°:")
-        print(f"    Recall:      {correct}/{n} ({recall:.0f}%)")
-        print(f"    d(true):     {np.mean(d_true_list):.3f}")
-        print(f"    d(other):    {np.mean(d_other_list):.3f}")
-        print(f"    Разрыв:      {np.mean(d_other_list) - np.mean(d_true_list):.3f}")
-        print(f"    Медиана err: {med_err:.0f} м")
+        print(f"    Без компенсации:  Recall={correct_raw}/{n} ({recall_raw:.0f}%)  "
+              f"d(true)={np.mean(d_true_raw):.3f}  d(other)={np.mean(d_other_raw):.3f}  "
+              f"медиана={med_raw:.0f} м")
+        print(f"    С компенсацией:   Recall={correct_comp}/{n} ({recall_comp:.0f}%)  "
+              f"d(true)={np.mean(d_true_comp):.3f}  d(other)={np.mean(d_other_comp):.3f}  "
+              f"медиана={med_comp:.0f} м")
 
     # ================================================================
     # ЭКСПЕРИМЕНТ 3: СЕЗОННОСТЬ

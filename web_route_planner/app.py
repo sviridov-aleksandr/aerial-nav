@@ -21,6 +21,7 @@ import json
 import math
 import signal
 import threading
+import time
 import subprocess
 import re
 import urllib.request
@@ -390,6 +391,48 @@ def simulation_page():
     return send_from_directory(os.path.dirname(os.path.abspath(__file__)), 'simulation.html')
 
 
+# ------------------------------------------------------------
+# Live-позиция от sim_flight_fc.py (реальная симуляция)
+# ------------------------------------------------------------
+
+_live_state = {
+    'lat': 0.0, 'lon': 0.0, 'alt': 0.0, 'heading': 0.0,
+    'conf': 0.0, 'err_m': 0.0, 'point': 0, 'total': 0,
+    'acc': 0.0, 'vision_count': 0, 'timestamp': 0.0,
+    'trail': [],
+}
+
+
+@app.route('/api/vision/update', methods=['POST'])
+def api_vision_update():
+    """Приём позиции от sim_flight_fc.py."""
+    global _live_state
+    data = request.get_json() or {}
+    lat = float(data.get('lat', 0))
+    lon = float(data.get('lon', 0))
+    _live_state['lat'] = lat
+    _live_state['lon'] = lon
+    _live_state['alt'] = float(data.get('alt', 0))
+    _live_state['heading'] = float(data.get('heading', 0))
+    _live_state['conf'] = float(data.get('conf', 0))
+    _live_state['err_m'] = float(data.get('err_m', 0))
+    _live_state['point'] = int(data.get('point', 0))
+    _live_state['total'] = int(data.get('total', 0))
+    _live_state['acc'] = float(data.get('acc', 0))
+    _live_state['vision_count'] = int(data.get('vision_count', 0))
+    _live_state['timestamp'] = time.time()
+    _live_state['trail'].append((lat, lon))
+    if len(_live_state['trail']) > 500:
+        _live_state['trail'] = _live_state['trail'][-500:]
+    return jsonify({'ok': True})
+
+
+@app.route('/api/vision/state', methods=['GET'])
+def api_vision_state():
+    """Текущая live-позиция для веб-карты."""
+    return jsonify(_live_state)
+
+
 @app.route('/api/sim/start', methods=['POST'])
 def api_sim_start():
     sim.start()
@@ -420,6 +463,119 @@ def api_sim_speed():
 @app.route('/api/sim/state', methods=['GET'])
 def api_sim_state():
     return jsonify(sim.get_state())
+
+
+# ------------------------------------------------------------
+# Экспорт полётного задания (QGC .plan)
+# ------------------------------------------------------------
+
+def build_qgc_plan(points, alt_m=1000.0, speed_ms=22.0):
+    """
+    Формирует полётное задание в формате QGroundControl .plan (JSON).
+
+    Формат: MAVLink mission items (ArduPilot, fixed wing).
+    """
+    import time as _time
+
+    # Базовые параметры миссии
+    mission_items = []
+
+    # HOME (waypoint 0)
+    lat0, lon0 = points[0]
+    mission_items.append({
+        "type": "SimpleItem",
+        "frame": 3,  # MAV_FRAME_GLOBAL_RELATIVE_ALT
+        "command": 16,  # MAV_CMD_NAV_WAYPOINT
+        "current": True,
+        "autoContinue": True,
+        "params": [0.0, 0.0, 0.0, 0.0, lat0, lon0, alt_m],
+    })
+
+    # Waypoints
+    for lat, lon in points[1:]:
+        mission_items.append({
+            "type": "SimpleItem",
+            "frame": 3,
+            "command": 16,
+            "current": False,
+            "autoContinue": True,
+            "params": [0.0, 0.0, 0.0, 0.0, lat, lon, alt_m],
+        })
+
+    # RTL (return to launch)
+    mission_items.append({
+        "type": "SimpleItem",
+        "frame": 3,
+        "command": 20,  # MAV_CMD_NAV_RETURN_TO_LAUNCH
+        "current": False,
+        "autoContinue": True,
+        "params": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+    })
+
+    plan = {
+        "fileType": "Plan",
+        "version": 1,
+        "groundStation": "QGroundControl",
+        "mission": {
+            "cruiseSpeed": speed_ms,
+            "hoverSpeed": 5.0,
+            "vehicleType": 10,  # MAV_TYPE_FIXED_WING
+            "firmwareType": 3,  # ArduPilot
+            "plannedHomePosition": [lat0, lon0, alt_m],
+            "items": mission_items,
+        },
+        "geoFence": {
+            "circles": [],
+            "polygons": [],
+            "version": 2,
+            "firmwareType": 3,
+            "vehicleType": 10,
+        },
+        "rallyPoints": {
+            "points": [],
+            "version": 2,
+            "firmwareType": 3,
+            "vehicleType": 10,
+        },
+    }
+    return plan
+
+
+@app.route('/api/export/qgc', methods=['GET'])
+def api_export_qgc():
+    """Экспорт маршрута в формат QGC .plan."""
+    data = load_route()
+    points = data.get('points', [])
+    if len(points) < 2:
+        return jsonify({'ok': False, 'error': 'Нужно минимум 2 точки'})
+
+    alt = float(request.args.get('alt', 1000))
+    speed = float(request.args.get('speed', 22))
+    plan = build_qgc_plan(points, alt, speed)
+
+    # Сохраняем файл
+    plan_path = os.path.join(PROJECT_DIR, 'flight_mission.plan')
+    with open(plan_path, 'w') as f:
+        json.dump(plan, f, indent=2)
+
+    return jsonify({
+        'ok': True,
+        'file': plan_path,
+        'points': len(points),
+        'alt': alt,
+        'speed': speed,
+    })
+
+
+@app.route('/api/export/qgc/download', methods=['GET'])
+def api_export_qgc_download():
+    """Скачивание .plan файла."""
+    plan_path = os.path.join(PROJECT_DIR, 'flight_mission.plan')
+    if not os.path.exists(plan_path):
+        return jsonify({'ok': False, 'error': 'Файл не найден'})
+    return send_from_directory(PROJECT_DIR, 'flight_mission.plan',
+                               as_attachment=True,
+                               download_name='flight_mission.plan')
 
 
 if __name__ == '__main__':

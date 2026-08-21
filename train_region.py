@@ -20,6 +20,7 @@ Curriculum: 3 этапа × 5 эпох
 
 import os
 import sys
+import argparse
 import multiprocessing
 import numpy as np
 import torch
@@ -32,20 +33,31 @@ PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, PROJECT_DIR)
 
 from siamese_network import AerialFeatureExtractor, TripletLoss
-from siamese_triplet_dataset import TripletDataset
+from siamese_triplet_dataset import TripletDataset, LEVELS
 
 multiprocessing.set_start_method('fork', force=True)
 
 
 def main():
+    parser = argparse.ArgumentParser(description="Обучение сиамской сети (многоуровневый индекс)")
+    parser.add_argument('--batch', type=int, default=32, help='Размер батча')
+    parser.add_argument('--epochs', type=int, default=15, help='Число эпох')
+    parser.add_argument('--workers', type=int, default=6, help='Число воркеров')
+    parser.add_argument('--lr', type=float, default=1e-3, help='Скорость обучения')
+    parser.add_argument('--output', type=str, default='region_model.pth',
+                        help='Имя выходной модели')
+    parser.add_argument('--resume', type=str, default=None,
+                        help='Путь к чекпоинту для продолжения обучения')
+    args = parser.parse_args()
+
     # Параметры (относительные пути — переносимость проекта)
     MAP_PATH = os.path.join(PROJECT_DIR, 'map_cache/region_google.tif')
     COORDS_PATH = os.path.join(PROJECT_DIR, 'training_data/region_dataset/positive_coords.npy')
-    OUTPUT_PATH = os.path.join(PROJECT_DIR, 'region_model.pth')
-    EPOCHS = 15
-    BATCH_SIZE = 32
-    LR = 1e-3
-    NUM_WORKERS = 6
+    OUTPUT_PATH = os.path.join(PROJECT_DIR, args.output)
+    EPOCHS = args.epochs
+    BATCH_SIZE = args.batch
+    LR = args.lr
+    NUM_WORKERS = args.workers
     DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 
     print(f"[Train] Device: {DEVICE}")
@@ -58,6 +70,21 @@ def main():
     model = AerialFeatureExtractor(embedding_dim=256).to(DEVICE)
     n_params = sum(p.numel() for p in model.parameters())
     print(f"[Train] Параметров: {n_params/1e6:.1f}M")
+
+    # Resume: загрузка чекпоинта
+    start_epoch = 0
+    if args.resume and os.path.exists(args.resume):
+        print(f"[Train] Продолжение обучения: {args.resume}")
+        ckpt = torch.load(args.resume, map_location=DEVICE, weights_only=False)
+        if isinstance(ckpt, dict) and 'model_state_dict' in ckpt:
+            model.load_state_dict(ckpt['model_state_dict'])
+            start_epoch = ckpt.get('epoch', 0)
+            print(f"[Train] Загружена эпоха {start_epoch}, loss={ckpt.get('loss', '?')}")
+        else:
+            model.load_state_dict(ckpt)
+            print(f"[Train] Загружены веса (без метаданных эпохи)")
+    elif args.resume:
+        print(f"[Train] ВНИМАНИЕ: {args.resume} не найден, обучение с нуля")
 
     # Loss и оптимизатор
     criterion = TripletLoss(margin=1.0).to(DEVICE)
@@ -88,7 +115,7 @@ def main():
     print(f"  Этап 0 (эпохи 1-5):   фотометрия + шум")
     print(f"  Этап 1 (эпохи 6-10):  + поворот ±30° + перспектива + сезоность + motion blur")
     print(f"  Этап 2 (эпохи 11-15): полный набор (погода + сезоность + динамика)")
-    print(f"[Train] Многоуровневый индекс: L0(512), L1(1024), L2(1792)")
+    print(f"[Train] Многоуровневый индекс: {len(LEVELS)} уровней (0-1200 м, шаг 100 м)")
 
     def curriculum_level(epoch: int) -> int:
         """Этап curriculum по эпохе.
@@ -108,7 +135,7 @@ def main():
 
     best_loss = float('inf')
 
-    for epoch in range(EPOCHS):
+    for epoch in range(start_epoch, EPOCHS):
         start_time = time.time()
         model.train()
 

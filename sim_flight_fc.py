@@ -31,6 +31,7 @@ import os
 import sys
 import time
 import math
+import json
 import argparse
 import threading
 import numpy as np
@@ -46,18 +47,19 @@ PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, PROJECT_DIR)
 
 from siamese_network import AerialFeatureExtractor
+from multi_level_index import MultiLevelIndex, altitude_to_level, LEVELS
 
 # --- Константы ---
-MAP_PATH = os.path.join(PROJECT_DIR, 'map_cache/antiuav_route_strip.tif')
-COORDS_PATH = os.path.join(PROJECT_DIR, 'training_data/route_dataset/positive_coords.npy')
+MAP_PATH = os.path.join(PROJECT_DIR, 'map_cache/region_google.tif')
+COORDS_PATH = os.path.join(PROJECT_DIR, 'training_data/region_dataset/route_filtered_coords.npy')
 RESOLUTION = 0.206  # м/px
 TILE_SIZE = 512
 CAM_W = 3840
 CAM_FOV_H = 90.0
 
-# Гео-привязка карты (центр маршрута)
-MAP_ORIGIN_LAT = 46.265
-MAP_ORIGIN_LON = 33.250
+# Гео-привязка карты (верхний левый угол region_google.tif, px 0,0)
+MAP_ORIGIN_LAT = 46.320378
+MAP_ORIGIN_LON = 33.209610
 
 # Параметры FC
 FC_BAUD = 115200
@@ -135,50 +137,66 @@ def camera_frame_from_map(src, center_px, altitude, tile_size=512):
     return np.array(img)
 
 
+def rotate_frame(frame, angle_deg):
+    """Поворот кадра на angle_deg. Без чёрных краёв: reflect-padding → поворот → кроп центра."""
+    from PIL import ImageOps
+    img = Image.fromarray(frame)
+    w, h = img.size
+    diag = int(math.ceil(math.sqrt(w**2 + h**2)))
+    pad_w = (diag - w) // 2
+    pad_h = (diag - h) // 2
+    img = ImageOps.expand(img, border=(pad_w, pad_h), fill=0)
+    img = img.rotate(angle_deg, resample=Image.BILINEAR, fillcolor=0)
+    cx, cy = img.size[0] // 2, img.size[1] // 2
+    img = img.crop((cx - w // 2, cy - h // 2, cx + w - w // 2, cy + h - h // 2))
+    return np.array(img)
+
+
 def map_px_to_gps(x_px, y_px):
-    """Конвертация пикселей карты → GPS."""
+    """Конвертация пиксели карты → GPS (origin = верхний левый угол)."""
     meters_per_deg_lat = 111320.0
     meters_per_deg_lon = 111320.0 * math.cos(math.radians(MAP_ORIGIN_LAT))
     dx_m = x_px * RESOLUTION
-    dy_m = y_px * RESOLUTION
+    dy_m = y_px * RESOLUTION  # y растёт вниз → lat уменьшается
     lon = MAP_ORIGIN_LON + dx_m / meters_per_deg_lon
-    lat = MAP_ORIGIN_LAT + dy_m / meters_per_deg_lat
+    lat = MAP_ORIGIN_LAT - dy_m / meters_per_deg_lat
     return lat, lon
 
 
 def gps_to_map_px(lat, lon):
-    """Конвертация GPS → пиксели карты."""
+    """Конвертация GPS → пиксели карты (origin = верхний левый угол)."""
     meters_per_deg_lat = 111320.0
     meters_per_deg_lon = 111320.0 * math.cos(math.radians(MAP_ORIGIN_LAT))
     dx_m = (lon - MAP_ORIGIN_LON) * meters_per_deg_lon
-    dy_m = (lat - MAP_ORIGIN_LAT) * meters_per_deg_lat
+    dy_m = (MAP_ORIGIN_LAT - lat) * meters_per_deg_lat  # инверсия: y растёт вниз
     return dx_m / RESOLUTION, dy_m / RESOLUTION
 
 
 class FlightSimulator:
     """
-    Симулятор полёта: генерирует кадры вдоль маршрута.
+    Симулятор полёта: генерирует кадры вдоль маршрута flight_mission.json.
 
-    Маршрут — последовательность тайлов (coords.npy).
-    Скорость определяет, как быстро движемся по маршруту.
+    Маршрут — 16 точек (lat/lon → пиксели карты). Движение интерполируется
+    между точками. Для matching кадр берётся от центра ближайшего тайла индекса.
     """
 
-    def __init__(self, coords, altitude, speed, reverse=False):
-        self.coords = coords if not reverse else coords[::-1]
+    def __init__(self, route_points_px, index_coords, altitude, speed, reverse=False):
+        self.coords = route_points_px if not reverse else route_points_px[::-1]
+        self.index_coords = index_coords  # тайлы индекса для поиска ближайшего
         self.altitude = altitude
         self.speed = speed  # м/с
         self.current_idx = 0
-        self.current_progress = 0.0  # дробная часть между тайлами
+        self.current_progress = 0.0  # дробная часть между точками
 
-        # Шаг между тайлами в метрах
+        # Шаг между точками в метрах
         dx = (self.coords[1] - self.coords[0])
         self.step_m = math.sqrt(dx[0]**2 + dx[1]**2) * RESOLUTION
-        self.dt_step = self.step_m / speed  # время между тайлами
+        self.dt_step = self.step_m / speed  # время между точками
 
-        print(f"[Sim] Маршрут: {len(coords)} точек, шаг={self.step_m:.1f} м")
+        print(f"[Sim] Маршрут: {len(self.coords)} точек, шаг={self.step_m:.1f} м")
         print(f"[Sim] Высота: {altitude} м, скорость: {speed} м/с")
         print(f"[Sim] Время между точками: {self.dt_step:.1f} с")
-        print(f"[Sim] Общее время: {len(coords) * self.dt_step / 60:.1f} мин")
+        print(f"[Sim] Общее время: {len(self.coords) * self.dt_step / 60:.1f} мин")
 
     def step(self, dt):
         """Продвинуться по маршруту на dt секунд."""
@@ -195,14 +213,24 @@ class FlightSimulator:
 
         return True  # продолжаем
 
+    def _nearest_tile(self, px, py):
+        """Найти ближайший тайл индекса к точке (px, py). Возвращает (x, y)."""
+        d2 = (self.index_coords[:, 0] - px) ** 2 + (self.index_coords[:, 1] - py) ** 2
+        nearest = np.argmin(d2)
+        return self.index_coords[nearest]
+
     def get_center_px(self):
-        """Текущая позиция в пикселях карты (центр кадра)."""
+        """Истинная позиция дрона (интерполяция маршрута) — то, что видит камера."""
         c0 = self.coords[self.current_idx]
         c1 = self.coords[min(self.current_idx + 1, len(self.coords) - 1)]
         t = self.current_progress
-        cx = c0[0] + (c1[0] - c0[0]) * t + TILE_SIZE / 2
-        cy = c0[1] + (c1[1] - c0[1]) * t + TILE_SIZE / 2
-        return cx, cy
+        px = c0[0] + (c1[0] - c0[0]) * t
+        py = c0[1] + (c1[1] - c0[1]) * t
+        return px, py
+
+    def get_true_px(self):
+        """Истинная позиция маршрута (alias для совместимости)."""
+        return self.get_center_px()
 
     def get_heading(self):
         """Направление движения в радианах."""
@@ -349,19 +377,28 @@ class FlightSimulationFC:
       маршрут → кадры → Siamese matching → координаты → FC → QGC
     """
 
-    def __init__(self, model, device, src, coords, altitude, speed,
+    def __init__(self, model, device, src, route_points_px, index_coords, altitude, speed,
                  mav_sender, reverse=False, index_step=4):
         self.model = model
         self.device = device
         self.src = src
-        self.simulator = FlightSimulator(coords, altitude, speed, reverse)
+        self.index_coords = index_coords[::index_step]
+        self.simulator = FlightSimulator(route_points_px, self.index_coords, altitude, speed, reverse)
         self.mav = mav_sender
-
-        # Индекс карты: эмбеддинги всех тайлов (прореженный для скорости)
         self.index_step = index_step
-        self.index_embs = None
-        self.index_locs = None
-        self.index_coords = None
+        self.index = None  # строится в build_index()
+
+        # INS dead-reckoning: позиция накапливается от скорости + heading
+        self.ins_x = None       # INS-позиция x (px)
+        self.ins_y = None       # INS-позиция y (px)
+        self.ins_heading = 0.0  # текущий heading (рад)
+        self.ins_speed_px = 0.0 # скорость (px/с)
+        self.ins_heading_noise = 1.0  #  шум курса: ±1° на шаг
+        self.ins_drift_rate = 0.01  # дрейф ИНС: 1% от пройденного пути
+        # Дрейф: 1% от пути + случайное блуждание 2px
+        self.corrections = 0    # счётчик коррекций по vision
+        self.correction_amounts = []  # величины коррекций (м)
+        self.rejected = 0       # сколько vision-измерений отброшено
 
         # Статистика
         self.frames_processed = 0
@@ -370,76 +407,118 @@ class FlightSimulationFC:
         self.errors_m = []
 
     def build_index(self):
-        """Построение индекса эмбеддингов тайлов карты."""
+        """Построение многоуровневого индекса (13 уровней, 0-1200 м)."""
         coords = np.load(COORDS_PATH)
-        index_coords = coords[::self.index_step]
-
-        print(f"[Sim] Индексация {len(index_coords)} тайлов (step={self.index_step})...")
-
-        batch_size = 32
-        all_embs = []
-        all_locs = []
-
-        batch_tiles = []
-        batch_locs = []
-
-        for i, (x, y) in enumerate(index_coords):
-            tile = read_tile(self.src, x, y)
-            if tile.max() == 0:
-                continue
-            batch_tiles.append(tile)
-            batch_locs.append((x, y))
-
-            if len(batch_tiles) >= batch_size:
-                embs = self._embed_batch(batch_tiles)
-                all_embs.append(embs)
-                all_locs.extend(batch_locs)
-                batch_tiles = []
-                batch_locs = []
-
-            if (i + 1) % 500 == 0:
-                print(f"  [{i+1}/{len(index_coords)}]")
-
-        if batch_tiles:
-            embs = self._embed_batch(batch_tiles)
-            all_embs.append(embs)
-            all_locs.extend(batch_locs)
-
-        self.index_embs = torch.cat(all_embs, dim=0)
-        self.index_locs = np.array(all_locs)
-        self.index_coords = index_coords
-
-        print(f"[Sim] Индекс: {self.index_embs.shape[0]} тайлов, "
-              f"{self.index_embs.shape[1]}D")
-
-    @torch.no_grad()
-    def _embed_batch(self, tiles):
-        arr = normalize(np.array(tiles))
-        tensor = torch.from_numpy(arr).permute(0, 3, 1, 2).to(self.device)
-        return model(tensor)
+        self.index = MultiLevelIndex(
+            model=self.model, src=self.src, coords=coords,
+            device=self.device, index_step=self.index_step,
+        )
+        self.index.build()
 
     @torch.no_grad()
     def _embed_single(self, tile):
         arr = normalize(np.array([tile]))
         tensor = torch.from_numpy(arr).permute(0, 3, 1, 2).to(self.device)
-        return model(tensor)[0]
+        return self.model(tensor)[0]
 
-    def find_position(self, frame):
+    def find_position(self, frame, altitude_m, yaw_rad=0.0, ins_pos=None, search_radius_m=500):
         """
-        Поиск позиции кадра в индексе.
+        Поиск позиции кадра с учётом высоты полёта.
+        Если ins_pos задан — локальный поиск в радиусе search_radius_m от INS.
+        Иначе — глобальный поиск по всему индексу.
 
-        Returns:
-            (best_x, best_y) — пиксели карты
-            confidence — cosine similarity
-            error_m — ошибка до истинной позиции (если известна)
+        Возвращает ((x_px, y_px), confidence, level)
         """
+        lvl = altitude_to_level(altitude_m)
+
+        # Компенсация рыскания: поворот кадра на −yaw
+        if abs(yaw_rad) > 0.01:
+            frame = rotate_frame(frame, -math.degrees(yaw_rad))
+
         query_emb = self._embed_single(frame)
-        d = torch.cdist(query_emb.unsqueeze(0), self.index_embs).squeeze(0)
-        nearest = d.argmin().item()
-        best_x, best_y = self.index_locs[nearest]
-        confidence = 1.0 - d[nearest].item()
 
-        return (best_x, best_y), confidence, nearest
+        # Поиск в выбранном уровне
+        index_embs = self.index.embs[lvl]  # (N, 256)
+        locs = self.index.locs[lvl]  # (N, 2)
+
+        if ins_pos is not None:
+            # Локальный поиск: только тайлы в радиусе от INS-позиции.
+            # Радиус расширяется ступенями 500→1000→2000 м (без полного поиска).
+            found = None
+            for radius_m in (search_radius_m, search_radius_m * 2, search_radius_m * 4):
+                radius_px = radius_m / RESOLUTION
+                dx = locs[:, 0] - ins_pos[0]
+                dy = locs[:, 1] - ins_pos[1]
+                mask = (dx * dx + dy * dy) < radius_px * radius_px
+                if mask.sum() > 0:
+                    found = mask
+                    break
+            if found is None:
+                # Даже 2 км пусто — возвращаем метку "нет данных" через conf=0
+                return (None, None), 0.0, lvl
+            d = torch.cdist(query_emb.unsqueeze(0), index_embs[found]).squeeze(0)
+            nearest_local = d.argmin().item()
+            nearest = np.where(found)[0][nearest_local].item()
+        else:
+            d = torch.cdist(query_emb.unsqueeze(0), index_embs).squeeze(0)  # (N,)
+            nearest = d.argmin().item()
+
+        best_x, best_y = locs[nearest]
+        if ins_pos is not None:
+            confidence = 1.0 - d[nearest_local].item()
+        else:
+            confidence = 1.0 - d[nearest].item()
+        return (best_x, best_y), confidence, lvl
+
+    def filter_position(self, meas_x, meas_y, dt, heading_rad=0.0):
+        """
+        INS dead-reckoning + корекция по vision.
+
+        Позиция дрона — интеграция скорости по heading (имитация ИНС).
+        Vision-matching даёт измерение; при высокой достоверности
+        плавно коректируем INS-позицию (не скачком).
+
+        Возвращает (out_x, out_y, corrected: bool)
+        """
+        # Обновляем heading/скорость (из маршрута)
+        self.ins_heading = heading_rad
+        self.ins_speed_px = self.simulator.speed / RESOLUTION
+
+        if self.ins_x is None:
+            # Инициализация от стартовой точки маршрута
+            true_x, true_y = self.simulator.get_true_px()
+            self.ins_x = true_x
+            self.ins_y = true_y
+            return true_x, true_y, False
+
+        # 1. Продвижение по ИНС (плавно, по heading)
+        dist_px = self.ins_speed_px * dt
+        # Дрейф: 1% от пройденного пути + шум heading ±1°
+        drift_px = dist_px * self.ins_drift_rate
+        drift_ang = math.radians(np.random.uniform(-self.ins_heading_noise,
+                                                    self.ins_heading_noise))
+        new_x = self.ins_x + dist_px * math.cos(heading_rad + drift_ang) + np.random.uniform(-drift_px, drift_px)
+        new_y = self.ins_y + dist_px * math.sin(heading_rad + drift_ang) + np.random.uniform(-drift_px, drift_px)
+        self.ins_x, self.ins_y = new_x, new_y
+
+        # 2. Оценка качества vision-измерения: расстояние от INS-позиции
+        dist_meas = math.sqrt((meas_x - self.ins_x)**2 + (meas_y - self.ins_y)**2) * RESOLUTION
+
+        # Порог доверия: коректируем только правдоподобные измерения.
+        # Ложный матч (conf низкий ИЛИ расстояние > 700 м) — не коректируем.
+        if dist_meas < 700.0:
+            # 3. Плавная корекция (не скачок): сдвигаем на долю ошибки
+            corr_frac = 0.7  # на сколько сокращаем ошибку за шаг
+            self.ins_x += (meas_x - self.ins_x) * corr_frac
+            self.ins_y += (meas_y - self.ins_y) * corr_frac
+            corr_m = dist_meas * corr_frac
+            self.correction_amounts.append(corr_m)
+            self.corrections += 1
+            return self.ins_x, self.ins_y, True
+
+        # Vision-измерение — выброс: не коректируем
+        self.rejected += 1
+        return self.ins_x, self.ins_y, False
 
     def run(self):
         """Главный цикл симуляции."""
@@ -457,48 +536,110 @@ class FlightSimulationFC:
 
                 # 1. Шаг симулятора
                 running = self.simulator.step(dt)
-                cx, cy = self.simulator.get_center_px()
                 heading = self.simulator.get_heading()
 
-                # 2. Генерируем кадр камеры
-                frame = camera_frame_from_map(self.src, (cx, cy),
+                # 2. Истинная позиция — реальная траектория дрона (маршрут)
+                #    Камера видит реальный ландшафт (центр ближайшего тайла)
+                true_x, true_y = self.simulator.get_true_px()
+                # Кадр генерируется от центра ближайшего тайла индекса
+                # (модель обучена на тайлах, не на межтайловых кадрах)
+                tile = self.simulator._nearest_tile(true_x, true_y)
+                cam_x, cam_y = tile[0] + TILE_SIZE / 2, tile[1] + TILE_SIZE / 2
+
+                # 3. Генерируем кадр камеры (north-up из карты)
+                frame = camera_frame_from_map(self.src, (cam_x, cam_y),
                                               self.simulator.altitude, TILE_SIZE)
                 if frame.max() == 0:
                     time.sleep(dt)
                     continue
 
-                # 3. Siamese matching
-                (pred_x, pred_y), conf, nearest_idx = self.find_position(frame)
+                # 4. Siamese matching — локальный поиск в радиусе 500 м от INS
+                ins_pos = (self.ins_x, self.ins_y) if self.ins_x is not None else None
+                (raw_x, raw_y), conf, lvl_used = self.find_position(
+                    frame, self.simulator.altitude, yaw_rad=0.0,
+                    ins_pos=ins_pos, search_radius_m=500)
+                if raw_x is None:
+                    # Нет тайлов индекса поблизости — только INS: продвигаем и шлём
+                    if self.ins_x is None:
+                        self.ins_x, self.ins_y = true_x, true_y
+                    dist_px = (self.simulator.speed / RESOLUTION) * dt
+                    drift_ang = math.radians(np.random.uniform(
+                        -self.ins_heading_noise, self.ins_heading_noise))
+                    self.ins_x += dist_px * math.cos(heading + drift_ang)
+                    self.ins_y += dist_px * math.sin(heading + drift_ang)
+                    out_x, out_y = self.ins_x, self.ins_y
+                    corrected = False
+                    true_x, true_y = self.simulator.get_true_px()
+                    err_px = math.sqrt((out_x - true_x)**2 + (out_y - true_y)**2)
+                    err_m = err_px * RESOLUTION
+                    self.errors_m.append(err_m)
+                    self.matches_total += 1
+                    if err_m < 100:
+                        self.matches_correct += 1
+                    out_lat, out_lon = map_px_to_gps(out_x + TILE_SIZE / 2,
+                                                      out_y + TILE_SIZE / 2)
+                    self.mav.send_vision_position(out_lat, out_lon,
+                                                  self.simulator.altitude, heading)
+                    self.frames_processed += 1
+                    continue
+
+                # 5. INS+Vision: продвижение по ИНС + плавная корекция
+                out_x, out_y, corrected = self.filter_position(raw_x, raw_y, dt, heading)
+                cx, cy = out_x, out_y
 
                 # Истинная позиция (для статистики)
-                true_x = cx - TILE_SIZE / 2
-                true_y = cy - TILE_SIZE / 2
-                err_px = math.sqrt((pred_x - true_x)**2 + (pred_y - true_y)**2)
+                err_px = math.sqrt((out_x - true_x)**2 + (out_y - true_y)**2)
                 err_m = err_px * RESOLUTION
                 self.errors_m.append(err_m)
                 self.matches_total += 1
-                if err_m < 30:
+                if err_m < 100:
                     self.matches_correct += 1
 
-                # 4. Конвертация в GPS
-                lat, lon = map_px_to_gps(pred_x + TILE_SIZE / 2,
-                                         pred_y + TILE_SIZE / 2)
+                # 6. Конвертация в GPS — INS-позиция (плавная)
+                out_lat, out_lon = map_px_to_gps(out_x + TILE_SIZE / 2,
+                                                  out_y + TILE_SIZE / 2)
 
-                # 5. Отправка в FC
-                self.mav.send_vision_position(lat, lon, self.simulator.altitude, heading)
+                # 7. Отправка в FC
+                self.mav.send_vision_position(out_lat, out_lon, self.simulator.altitude, heading)
+
+                # 7b. Отправка в веб-сервер (live-позиция)
+                try:
+                    import urllib.request
+                    payload = json.dumps({
+                        'lat': out_lat, 'lon': out_lon,
+                        'alt': self.simulator.altitude,
+                        'heading': math.degrees(heading),
+                        'conf': conf, 'err_m': err_m,
+                        'point': self.simulator.current_idx,
+                        'total': len(self.simulator.coords),
+                        'acc': self.matches_correct / max(1, self.matches_total) * 100,
+                        'vision_count': self.mav.vision_sent,
+                        'rejected': self.rejected,
+                        'corrections': self.corrections,
+                    }).encode()
+                    req = urllib.request.Request(
+                        'http://localhost:8080/api/vision/update',
+                        data=payload, headers={'Content-Type': 'application/json'})
+                    urllib.request.urlopen(req, timeout=0.5)
+                except Exception:
+                    pass
 
                 self.frames_processed += 1
 
-                # 6. Логирование (каждые 5 секунд)
+                # 8. Логирование (каждые 5 секунд)
                 if self.frames_processed % 25 == 0:
                     med_err = float(np.median(self.errors_m[-25:]))
-                    acc = self.matches_correct / self.matches_total * 100
+                    acc = self.matches_correct / max(1, self.matches_total) * 100
+                    rej_pct = self.rejected / max(1, self.frames_processed) * 100
+                    tag = "КОРРЕКЦИЯ" if corrected else "ИНС"
                     print(f"[Sim] Точка {self.simulator.current_idx}/"
                           f"{len(self.simulator.coords)} | "
-                          f"GPS: {lat:.5f}, {lon:.5f} | "
+                          f"GPS: {out_lat:.5f}, {out_lon:.5f} | "
                           f"Err: {err_m:.0f} м (мед={med_err:.0f}) | "
                           f"Conf: {conf:.2f} | "
                           f"Acc: {acc:.0f}% | "
+                          f"Отброс: {rej_pct:.0f}% | "
+                          f"{tag} | "
                           f"Vision: {self.mav.vision_sent}")
 
                 # 7. Heartbeat компаньона
@@ -538,7 +679,7 @@ def main():
                         help='Высота полёта (м), по умолчанию 1000')
     parser.add_argument('--speed', type=float, default=22.0,
                         help='Скорость (м/с), по умолчанию 22')
-    parser.add_argument('--model', type=str, default='region_model.pth',
+    parser.add_argument('--model', type=str, default='region_model_run7.pth',
                         help='Путь к модели')
     parser.add_argument('--device', type=str, default='auto',
                         help='UART устройство (по умолчанию автодетект)')
@@ -556,20 +697,33 @@ def main():
     # 2. Открытие карты
     print(f"[Sim] Открытие карты: {MAP_PATH}")
     src = rasterio.open(MAP_PATH)
-    coords = np.load(COORDS_PATH)
-    print(f"[Sim] Карта: {src.width}x{src.height} px, {len(coords)} тайлов маршрута")
+    index_coords = np.load(COORDS_PATH)
+    print(f"[Sim] Карта: {src.width}x{src.height} px, {len(index_coords)} тайлов в индексе")
 
-    # 3. Подключение к FC
+    # 3. Маршрут полёта — 16 точек из flight_mission.json
+    mission_path = os.path.join(PROJECT_DIR, 'flight_mission.json')
+    with open(mission_path) as f:
+        mission = json.load(f)
+    route_latlon = mission['points']
+    route_points_px = []
+    for lat, lon in route_latlon:
+        px_x, px_y = gps_to_map_px(lat, lon)
+        route_points_px.append((int(px_x), int(px_y)))
+    route_points_px = np.array(route_points_px)
+    print(f"[Sim] Маршрут: {len(route_points_px)} точек из flight_mission.json")
+
+    # 4. Подключение к FC
     mav = MAVLinkSender(device=args.device, baud=FC_BAUD)
     mav.connect()
     mav.start_telemetry_thread()
 
-    # 4. Создание симуляции
+    # 5. Создание симуляции
     sim = FlightSimulationFC(
         model=model,
         device=device,
         src=src,
-        coords=coords,
+        route_points_px=route_points_px,
+        index_coords=index_coords,
         altitude=args.altitude,
         speed=args.speed,
         mav_sender=mav,

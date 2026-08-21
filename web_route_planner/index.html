@@ -84,6 +84,7 @@
         <div class="d-flex gap-2 mt-2">
             <button class="btn btn-sm btn-outline-secondary" id="clearBtn">Очистить</button>
             <button class="btn btn-sm btn-outline-success" id="saveBtn">Сохранить JSON</button>
+            <button class="btn btn-sm btn-outline-primary" id="exportQgcBtn" style="margin-right: 6px;">⬇️ Экспорт .plan (QGC)</button>
         </div>
 
         <!-- Статистика -->
@@ -403,15 +404,50 @@ async function importYandex() {
 // Сохранение
 // ------------------------------------------------------------
 async function saveRoute() {
+    if (points.length < 2) {
+        alert('Нужно минимум 2 точки');
+        return;
+    }
     try {
         const resp = await fetch('/api/route', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({ name: 'Маршрут', source: 'web', points })
+            body: JSON.stringify({ points, name: 'Маршрут', source: 'web' })
         });
         const data = await resp.json();
         if (data.ok) {
-            alert('Сохранено: ' + data.points + ' точек, ' + data.length_km + ' км');
+            alert(`Маршрут сохранён: ${data.points} точек, ${data.length_km} км`);
+        } else {
+            alert('Ошибка: ' + (data.error || 'не удалось сохранить'));
+        }
+    } catch (e) {
+        alert('Ошибка: ' + e.message);
+    }
+}
+
+async function exportQgc() {
+    if (points.length < 2) {
+        alert('Нужно минимум 2 точки');
+        return;
+    }
+    const alt = prompt('Высота полёта (м):', '1000');
+    const speed = prompt('Скорость (м/с):', '22');
+    if (!alt || !speed) return;
+
+    try {
+        const resp = await fetch(`/api/export/qgc?alt=${alt}&speed=${speed}`);
+        const data = await resp.json();
+        if (data.ok) {
+            // Скачиваем файл
+            const a = document.createElement('a');
+            a.href = '/api/export/qgc/download';
+            a.download = 'flight_mission.plan';
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            alert(`Полётное задание сохранено: ${data.points} точек, высота ${data.alt} м, скорость ${data.speed} м/с`);
+        } else {
+            alert('Ошибка: ' + (data.error || 'не удалось экспортировать'));
         }
     } catch (e) {
         alert('Ошибка: ' + e.message);
@@ -582,6 +618,9 @@ window.addEventListener('DOMContentLoaded', async () => {
     document.getElementById('saveBtn').onclick = saveRoute;
     document.getElementById('downloadBtn').onclick = downloadMap;
     document.getElementById('stopBtn').onclick = stopDownload;
+
+    // Экспорт полётного задания в QGroundControl (.plan)
+    document.getElementById('exportQgcBtn').onclick = exportQgc;
 
     document.getElementById('providerSelect').onchange = (e) => {
         setTileProvider(e.target.value);

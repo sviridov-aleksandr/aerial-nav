@@ -40,14 +40,7 @@ Image.MAX_IMAGE_PIXELS = None
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from augmentations import apply_camera_conditions, CURRICULUM_LEVELS
-
-
-# Уровни индекса (синхронизированы с multi_level_index.py)
-LEVELS = [
-    {'patch_size': 512,   'alt_min': 0,   'alt_max': 550},
-    {'patch_size': 1024,  'alt_min': 550, 'alt_max': 950},
-    {'patch_size': 1792,  'alt_min': 950, 'alt_max': 1500},
-]
+from multi_level_index import LEVELS, altitude_to_level, ALT_STEP, ALT_MAX
 
 TILE_SIZE = 512
 
@@ -66,7 +59,7 @@ class TripletDataset(Dataset):
     def __init__(self, map_path: str, coords_path: str,
                  tile_size: int = 512, hard_neg_prob: float = 0.5,
                  aug_level: int = 0,
-                 level_weights: tuple = (0.4, 0.35, 0.25)):
+                 level_weights: tuple = None):
         """
         Args:
             map_path: путь к GeoTIFF карте
@@ -74,14 +67,15 @@ class TripletDataset(Dataset):
             tile_size: размер тайла/выхода (512)
             hard_neg_prob: вероятность выбора negative из соседних тайлов
             aug_level: curriculum-этап (0=фотометрия, 1=+геометрия, 2=полный)
-            level_weights: вероятности выбора каждого уровня индекса
-                           (L0, L1, L2). По умолчанию больше данных для низких
-                           высот, где тайлов больше.
+            level_weights: вероятности выбора каждого уровня индекса.
+                           По умолчанию — равномерно по 13 уровням.
         """
         self.map_path = map_path
         self.tile_size = tile_size
         self.hard_neg_prob = hard_neg_prob
         self.aug_level = aug_level
+        if level_weights is None:
+            level_weights = tuple(1.0 / len(LEVELS) for _ in LEVELS)
         self.level_weights = level_weights
 
         print(f"[TripletDataset] Открываем карту: {map_path}")

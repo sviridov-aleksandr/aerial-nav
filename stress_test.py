@@ -11,12 +11,14 @@ stress_test.py — стресс-тест модели на всех уровня
 
 Запуск:
   python3 stress_test.py
+  python3 stress_test.py --model region_model_run7.pth
 """
 
 import os
 import sys
 import math
 import time
+import argparse
 import numpy as np
 import rasterio
 from rasterio.windows import Window
@@ -48,9 +50,9 @@ CAM_FOV_H = 90.0
 ALTITUDES = [700.0, 1000.0, 1200.0]
 
 
-def load_model():
+def load_model(model_path):
     model = AerialFeatureExtractor(embedding_dim=256).to(DEVICE)
-    ckpt = torch.load(MODEL_PATH, map_location=DEVICE, weights_only=False)
+    ckpt = torch.load(model_path, map_location=DEVICE, weights_only=False)
     if isinstance(ckpt, dict) and 'model_state_dict' in ckpt:
         model.load_state_dict(ckpt['model_state_dict'])
         epoch = ckpt.get('epoch', '?')
@@ -126,11 +128,17 @@ def camera_frame_from_map(src, center_px, altitude, tile_size=512):
 
 
 def main():
+    parser = argparse.ArgumentParser(description='Стресс-тест модели (CPU)')
+    parser.add_argument('--model', type=str, default=MODEL_PATH,
+                        help=f'Путь к файлу модели (по умолчанию {MODEL_PATH})')
+    args = parser.parse_args()
+    model_path = args.model
+
     print("=" * 70)
     print("СТРЕСС-ТЕСТ МОДЕЛИ (CPU, все уровни аугментаций)")
     print("=" * 70)
 
-    model = load_model()
+    model = load_model(model_path)
     src = rasterio.open(MAP_PATH)
     coords = np.load(COORDS_PATH)
     print(f"[Stress] Тайлов в датасете: {len(coords)}")
@@ -266,7 +274,7 @@ def main():
     print("ИТОГ")
     print(f"{'='*70}")
     print(f"  Случайное угадывание: {100/INDEX_SIZE:.2f}%")
-    print(f"  Модель: region_model.pth")
+    print(f"  Модель: {os.path.basename(model_path)}")
     print(f"  Индекс: {index_embs.shape[0]} тайлов")
     print(f"{'='*70}")
 
